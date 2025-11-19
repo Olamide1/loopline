@@ -59,6 +59,12 @@ const workspaceSchema = new mongoose.Schema({
     enum: ['active', 'inactive', 'cancelled'],
     default: 'inactive'
   },
+  inviteCode: {
+    type: String,
+    unique: true,
+    sparse: true,
+    default: null
+  },
   createdAt: {
     type: Date,
     default: Date.now
@@ -72,6 +78,7 @@ const workspaceSchema = new mongoose.Schema({
 // Indexes
 workspaceSchema.index({ admin: 1 })
 workspaceSchema.index({ 'members.user': 1 })
+workspaceSchema.index({ inviteCode: 1 })
 
 // Update timestamp
 workspaceSchema.pre('save', function(next) {

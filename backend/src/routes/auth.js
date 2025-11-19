@@ -1,16 +1,40 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import User from '../models/User.js'
+import Workspace from '../models/Workspace.js'
 import { authenticate } from '../middleware/auth.js'
 
 const router = express.Router()
+
+// Validate invite code (public route)
+router.get('/invite/validate/:code', async (req, res) => {
+  try {
+    const { code } = req.params
+    
+    const workspace = await Workspace.findOne({ inviteCode: code })
+    
+    if (!workspace) {
+      return res.status(404).json({ message: 'Invalid invite code' })
+    }
+    
+    res.json({
+      valid: true,
+      workspace: {
+        _id: workspace._id,
+        name: workspace.name
+      }
+    })
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to validate invite code', error: error.message })
+  }
+})
 
 // Register
 router.post('/register', async (req, res) => {
   console.log('📝 Registration request received:', { email: req.body?.email, name: req.body?.name, hasPassword: !!req.body?.password })
   
   try {
-    const { email, password, name } = req.body
+    const { email, password, name, inviteCode } = req.body
     
     console.log('📋 Registration data:', { email, name, passwordLength: password?.length })
     
@@ -42,6 +66,42 @@ router.post('/register', async (req, res) => {
     await user.save()
     console.log('✅ User created successfully:', user._id)
     
+    // If invite code provided, add user to workspace
+    let workspaceId = null
+    if (inviteCode) {
+      try {
+        const workspace = await Workspace.findOne({ inviteCode })
+        if (workspace) {
+          // Check if user is already a member
+          const isMember = workspace.members?.some(m => {
+            if (!m || !m.user) return false
+            const memberId = m.user?._id || m.user
+            return memberId?.toString() === user._id.toString()
+          }) || false
+          
+          if (!isMember) {
+            workspace.members.push({
+              user: user._id,
+              role: 'member'
+            })
+            await workspace.save()
+            
+            // Add workspace to user
+            if (!user.workspaces.includes(workspace._id)) {
+              user.workspaces.push(workspace._id)
+              await user.save()
+            }
+            
+            workspaceId = workspace._id
+            console.log('✅ User added to workspace via invite code:', workspace._id)
+          }
+        }
+      } catch (error) {
+        console.error('⚠️ Failed to add user to workspace via invite code:', error)
+        // Don't fail registration if workspace add fails
+      }
+    }
+    
     const token = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET,
@@ -57,7 +117,8 @@ router.post('/register', async (req, res) => {
         name: user.name,
         avatar: user.avatar,
         role: user.role
-      }
+      },
+      workspaceId // Return workspace ID if joined via invite
     })
   } catch (error) {
     console.error('❌ Registration error:', error)
@@ -94,10 +155,6 @@ router.post('/login', async (req, res) => {
     const user = await User.findOne({ email })
     if (!user) {
       return res.status(401).json({ message: 'Invalid credentials' })
-    }
-    
-    if (!user.password) {
-      return res.status(401).json({ message: 'Please use Google login' })
     }
     
     const isMatch = await user.comparePassword(password)

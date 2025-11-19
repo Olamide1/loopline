@@ -5,6 +5,10 @@
       <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--space-4) var(--space-5); background: var(--color-bg); border-bottom: 3px solid var(--color-text);">
         <h2 class="heading-2" style="margin: 0;">{{ workspace?.name || 'Workspace' }}</h2>
         <div style="display: flex; align-items: center; gap: var(--space-4);">
+          <router-link :to="`/workspace/${workspaceId}/dm`" class="btn-icon-header" title="Direct Messages">
+            💬
+            <span v-if="unreadDMCount > 0" class="notification-badge">{{ unreadDMCount > 99 ? '99+' : unreadDMCount }}</span>
+          </router-link>
           <span v-if="authStore.user" style="font-size: var(--text-sm); font-weight: 700; color: var(--color-text); text-transform: uppercase; letter-spacing: 0.5px;">
             {{ authStore.user.name }}
           </span>
@@ -113,6 +117,32 @@
         </div>
         
       
+      <!-- Direct Messages Section -->
+      <div style="margin-bottom: var(--space-4); border-bottom: 2px solid var(--color-border); padding-bottom: var(--space-3);">
+        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--space-3) var(--space-4);">
+          <h4 class="text-muted" style="margin: 0; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; font-size: var(--text-sm);">Direct Messages</h4>
+          <router-link 
+            :to="`/workspace/${workspaceId}/dm`"
+            class="btn-create-channel"
+            style="background: var(--matisse-yellow); color: var(--bauhaus-black); border: none; width: 28px; height: 28px; border-radius: var(--radius-sm); font-weight: 900; font-size: var(--text-base); cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.1); transition: all var(--transition-fast); flex-shrink: 0; text-decoration: none;"
+            title="New Message"
+          >
+            +
+          </router-link>
+        </div>
+        <div 
+          class="channel-item"
+          :class="{ active: route.name === 'DirectMessages' || route.name === 'DirectMessageChat' }"
+          @click="router.push(`/workspace/${workspaceId}/dm`)"
+          style="cursor: pointer;"
+        >
+          <div style="display: flex; align-items: center; gap: var(--space-2); width: 100%;">
+            <span style="font-weight: 600; font-size: var(--text-sm);">💬 Direct Messages</span>
+            <span v-if="unreadDMCount > 0" class="thread-notification-badge" style="margin-left: auto;">{{ unreadDMCount > 99 ? '99+' : unreadDMCount }}</span>
+          </div>
+        </div>
+      </div>
+      
       <div class="channels-list">
         <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--space-3) var(--space-4); border-bottom: 2px solid var(--color-border);">
           <h4 class="text-muted" style="margin: 0; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; font-size: var(--text-sm);">Channels</h4>
@@ -217,6 +247,7 @@
           <div style="display: flex; align-items: center; gap: var(--space-2);">
             <span v-if="channel.privacy === 'private'" style="font-size: var(--text-xs); flex-shrink: 0;" title="Private channel">🔒</span>
             <span style="font-weight: 600; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"># {{ channel.name }}</span>
+            <span v-if="threadNotifications[channel._id] > 0" class="thread-notification-badge">{{ threadNotifications[channel._id] > 99 ? '99+' : threadNotifications[channel._id] }}</span>
           </div>
         </div>
       </div>
@@ -281,6 +312,41 @@
             />
             <span>Allow Public Channels</span>
           </label>
+        </div>
+        
+        <!-- Invite Code -->
+        <div style="margin-bottom: var(--space-4);">
+          <label style="display: block; margin-bottom: var(--space-2); font-size: var(--text-sm); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--color-text-muted);">Invite Code</label>
+          <div style="display: flex; gap: var(--space-2); align-items: center;">
+            <input
+              :value="workspace?.inviteCode || workspaceSettings?.inviteCode || 'Loading...'"
+              type="text"
+              class="input"
+              readonly
+              style="flex: 1; font-size: var(--text-base); font-weight: 700; letter-spacing: 1px; background: var(--color-bg-alt);"
+            />
+            <button
+              type="button"
+              @click="regenerateInviteCode"
+              class="btn btn-secondary"
+              :disabled="regeneratingCode"
+              style="flex-shrink: 0; padding: var(--space-2) var(--space-3); font-size: var(--text-xs);"
+            >
+              {{ regeneratingCode ? '...' : 'Regenerate' }}
+            </button>
+            <button
+              type="button"
+              @click="copyInviteCode"
+              class="btn btn-accent"
+              style="flex-shrink: 0; padding: var(--space-2) var(--space-3); font-size: var(--text-xs);"
+              title="Copy invite code"
+            >
+              📋
+            </button>
+          </div>
+          <p style="margin-top: var(--space-2); font-size: var(--text-xs); color: var(--color-text-muted); line-height: 1.5;">
+            Share this code with others to invite them to your workspace. They can use it at <router-link to="/invite" style="color: var(--color-primary); font-weight: 600;">/invite</router-link>
+          </p>
         </div>
         
         <!-- Google Drive Status -->
@@ -403,6 +469,10 @@ const channels = ref([])
 const currentChannelId = ref(null)
 const error = ref('')
 const loading = ref(false)
+const unreadNotificationCount = ref(0)
+const threadNotifications = ref({}) // Map of channelId -> count
+const unreadDMCount = ref(0)
+const dmConversations = ref([])
 
 const showCreateChannel = ref(false)
 const creatingChannel = ref(false)
@@ -424,11 +494,13 @@ const showMembers = ref(false) // Collapsible members section
 const loadingSettings = ref(false)
 const savingSettings = ref(false)
 const settingsError = ref('')
+const regeneratingCode = ref(false)
 const workspaceSettings = ref({
   name: '',
   retentionDays: null,
   allowPublicChannels: true,
-  driveLinked: false
+  driveLinked: false,
+  inviteCode: null
 })
 
 const workspaceId = route.params.workspaceId
@@ -439,11 +511,19 @@ const { isWorkspaceAdmin, hasAdminRole } = useWorkspaceAuth(workspace)
 onMounted(async () => {
   await fetchWorkspace()
   await fetchChannels()
+  await fetchNotifications()
+  await fetchDMConversations()
   
-  // If we have channels and no channel is selected, redirect to the first one (welcome)
-  if (channels.value.length > 0 && !route.params.channelId) {
+  // If we have channels and no channel/DM is selected, redirect to the first channel (welcome)
+  if (channels.value.length > 0 && !route.params.channelId && route.name !== 'DirectMessages' && route.name !== 'DirectMessageChat') {
     router.push(`/workspace/${workspaceId}/channel/${channels.value[0]._id}`)
   }
+  
+  // Poll for notifications and DMs every 30 seconds
+  setInterval(() => {
+    fetchNotifications()
+    fetchDMConversations()
+  }, 30000)
 })
 
 // Watch for settings panel opening to load settings
@@ -464,6 +544,12 @@ const fetchWorkspace = async () => {
       }
     })
     workspace.value = response.data
+    
+    // Ensure inviteCode exists (for existing workspaces)
+    if (!workspace.value.inviteCode) {
+      // The backend should have generated it, but if not, we'll show a message
+      console.warn('⚠️ Workspace missing inviteCode, backend should generate it')
+    }
   } catch (error) {
     console.error('❌ Failed to fetch workspace:', error)
     if (error.response?.status === 401) {
@@ -509,6 +595,73 @@ const fetchChannels = async () => {
     }
   } finally {
     loading.value = false
+  }
+}
+
+const fetchNotifications = async () => {
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    // Get unread count
+    const countResponse = await axios.get(`${apiUrl}/api/notifications/unread/count`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    unreadNotificationCount.value = countResponse.data.count || 0
+    
+    // Get thread notifications grouped by channel
+    const notificationsResponse = await axios.get(`${apiUrl}/api/notifications?unreadOnly=true&limit=100`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    const notifications = Array.isArray(notificationsResponse.data) ? notificationsResponse.data : []
+    const threadNotifs = notifications.filter(n => n.type === 'thread_reply' && n.channel)
+    
+    // Group by channel
+    const channelCounts = {}
+    threadNotifs.forEach(notif => {
+      const channelId = notif.channel?._id || notif.channel
+      if (channelId) {
+        channelCounts[channelId] = (channelCounts[channelId] || 0) + 1
+      }
+    })
+    
+    threadNotifications.value = channelCounts
+  } catch (error) {
+    console.error('❌ Failed to fetch notifications:', error)
+  }
+}
+
+const fetchDMConversations = async () => {
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    const response = await axios.get(`${apiUrl}/api/direct-messages/conversations`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    dmConversations.value = Array.isArray(response.data) ? response.data : []
+    
+    // Calculate total unread DM count
+    const userId = authStore.user?._id || authStore.user?.id
+    const userIdStr = userId?.toString()
+    unreadDMCount.value = dmConversations.value.reduce((total, conv) => {
+      if (conv.unreadCount instanceof Map) {
+        return total + (conv.unreadCount.get(userIdStr) || 0)
+      } else if (typeof conv.unreadCount === 'object') {
+        return total + (conv.unreadCount[userIdStr] || 0)
+      }
+      return total
+    }, 0)
+  } catch (error) {
+    console.error('❌ Failed to fetch DM conversations:', error)
   }
 }
 
@@ -657,7 +810,15 @@ const fetchSettings = async () => {
       name: response.data.name || workspace.value?.name || '',
       retentionDays: response.data.settings?.retentionDays || null,
       allowPublicChannels: response.data.settings?.allowPublicChannels !== false,
-      driveLinked: response.data.driveLinked || false
+      driveLinked: response.data.driveLinked || false,
+      inviteCode: response.data.inviteCode || null
+    }
+    
+    // Update workspace inviteCode if returned
+    if (response.data.inviteCode) {
+      if (workspace.value) {
+        workspace.value.inviteCode = response.data.inviteCode
+      }
     }
   } catch (error) {
     console.error('❌ Failed to fetch settings:', error)
@@ -715,6 +876,48 @@ const handleSaveSettings = async () => {
   } finally {
     savingSettings.value = false
   }
+}
+
+const regenerateInviteCode = async () => {
+  if (!isWorkspaceAdmin.value) return
+  
+  regeneratingCode.value = true
+  
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    const response = await axios.post(`${apiUrl}/api/workspaces/${workspaceId}/invite-code/regenerate`, {}, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    // Update workspace with new code
+    if (workspace.value) {
+      workspace.value.inviteCode = response.data.inviteCode
+    }
+    
+    // Refresh workspace data
+    await fetchWorkspace()
+  } catch (error) {
+    console.error('❌ Failed to regenerate invite code:', error)
+    alert(error.response?.data?.message || 'Failed to regenerate invite code')
+  } finally {
+    regeneratingCode.value = false
+  }
+}
+
+const copyInviteCode = () => {
+  if (!workspace.value?.inviteCode) return
+  
+  navigator.clipboard.writeText(workspace.value.inviteCode).then(() => {
+    // Show feedback (you could add a toast notification here)
+    alert('Invite code copied to clipboard!')
+  }).catch(err => {
+    console.error('Failed to copy:', err)
+    alert('Failed to copy invite code')
+  })
 }
 
 const cancelSettings = () => {
@@ -887,10 +1090,59 @@ const handleLogout = () => {
   min-height: 0;
 }
 
-.workspace-main > * {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
+  .workspace-main > * {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+  }
+
+.btn-icon-header {
+  position: relative;
+  background: transparent;
+  border: 2px solid var(--color-text);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-lg);
+  transition: all var(--transition-fast);
+  text-decoration: none;
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon-header:hover {
+  background: var(--color-bg-alt);
+  transform: scale(1.1);
+}
+
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: var(--matisse-red);
+  color: white;
+  border-radius: 10px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+  border: 2px solid var(--color-bg);
+}
+
+.thread-notification-badge {
+  background: var(--matisse-yellow);
+  color: var(--bauhaus-black);
+  border-radius: 10px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* Mobile: One column layout - Simplified */

@@ -28,9 +28,35 @@
         </div>
         <div class="message-content" @mouseenter="showMessageActions(message._id)" @mouseleave="hideMessageActions(message._id)">
           <div class="message-header">
-            <span class="message-author">{{ message.user?.name || 'Unknown' }}</span>
+            <div class="message-author-wrapper">
+              <span class="message-author">{{ message.user?.name || 'Unknown' }}</span>
+              <span 
+                v-if="message.user?.status" 
+                class="user-status-indicator"
+                :class="`status-${message.user.status}`"
+                :title="message.user.status === 'online' ? 'Online' : message.user.status === 'away' ? 'Away' : 'Offline'"
+              ></span>
+            </div>
             <span v-if="formatTime(message.createdAt)" class="message-time">{{ formatTime(message.createdAt) }}</span>
             <span v-if="message.edited" class="message-edited">(edited)</span>
+          </div>
+          
+          <!-- Read Receipts -->
+          <div v-if="message.readBy && message.readBy.length > 0 && !message.threadParent" class="read-receipts">
+            <span class="read-receipts-label">Read by:</span>
+            <div class="read-receipts-avatars">
+              <span
+                v-for="read in message.readBy.slice(0, 5)"
+                :key="read.user?._id || read.user"
+                class="read-receipt-avatar"
+                :title="read.user?.name || 'Unknown'"
+              >
+                {{ read.user?.name?.charAt(0)?.toUpperCase() || '?' }}
+              </span>
+              <span v-if="message.readBy.length > 5" class="read-receipt-more">
+                +{{ message.readBy.length - 5 }}
+              </span>
+            </div>
           </div>
           <div v-if="editingMessageId === message._id" class="message-edit-form">
             <input
@@ -96,6 +122,7 @@
           <div v-if="!message.threadParent" class="message-actions">
             <button @click="toggleThread(message)" class="message-action-btn" title="Reply">
               💬 {{ getThreadCount(message) || 0 }}
+              <span v-if="getThreadUnreadCount(message) > 0" class="thread-unread-badge">{{ getThreadUnreadCount(message) }}</span>
             </button>
             <button v-if="!message.reactions || message.reactions.length === 0" @click="showReactionPicker(message)" class="message-action-btn" title="Add reaction">
               😀
@@ -256,6 +283,9 @@ const searchQuery = ref('')
 const searchResults = ref([])
 const searching = ref(false)
 
+// Notifications
+const threadUnreadCounts = ref({}) // Map of messageId -> count
+
 // Mention autocomplete
 const showMentionAutocomplete = ref(false)
 const mentionSuggestions = ref([])
@@ -288,6 +318,9 @@ const loadChannelData = async () => {
     socket.value.disconnect()
     socket.value = null
   }
+  
+  // Fetch thread notifications
+  await fetchThreadNotifications()
   
   // Load new channel data
   await fetchChannel()
@@ -334,7 +367,20 @@ const fetchWorkspace = async () => {
     const apiUrl = import.meta.env.VITE_API_URL || ''
     const token = authStore.token || localStorage.getItem('token')
     
-    const response = await axios.get(`${apiUrl}/api/workspaces/${channel.value.workspace}`, {
+    // Extract workspace ID - handle both string and object cases
+    let workspaceId = channel.value.workspace
+    if (typeof workspaceId === 'object' && workspaceId !== null) {
+      workspaceId = workspaceId._id || workspaceId.id || workspaceId
+    }
+    if (!workspaceId) {
+      console.error('❌ No workspace ID found in channel')
+      return
+    }
+    
+    // Convert to string if it's not already
+    workspaceId = String(workspaceId)
+    
+    const response = await axios.get(`${apiUrl}/api/workspaces/${workspaceId}`, {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -348,7 +394,8 @@ const fetchWorkspace = async () => {
         _id: workspace.value.admin._id || workspace.value.admin,
         name: workspace.value.admin.name,
         email: workspace.value.admin.email,
-        avatar: workspace.value.admin.avatar
+        avatar: workspace.value.admin.avatar,
+        status: workspace.value.admin.status || 'offline'
       })
     }
     if (workspace.value.members) {
@@ -359,9 +406,17 @@ const fetchWorkspace = async () => {
             _id: user._id,
             name: user.name,
             email: user.email,
-            avatar: user.avatar
+            avatar: user.avatar,
+            status: user.status || 'offline'
           })
         }
+      })
+    }
+    
+    // Update online users from workspace
+    if (workspace.value.onlineUsers) {
+      workspace.value.onlineUsers.forEach(onlineUser => {
+        updateUserStatus(onlineUser._id || onlineUser, onlineUser.status || 'online')
       })
     }
   } catch (error) {
@@ -385,20 +440,17 @@ const fetchMessages = async () => {
     // Filter out thread replies from main messages (only show parent messages)
     const parentMessages = fetchedMessages.filter(msg => !msg.threadParent)
     
-    // Populate mentions if not already populated
-    messages.value = parentMessages.map(msg => {
-      if (msg.mentions && msg.mentions.length > 0 && typeof msg.mentions[0] === 'string') {
-        // Mentions are just IDs, need to populate - but we'll handle in display
-        return msg
-      }
-      return msg
-    })
-    
-    // Populate reactions if needed
-    messages.value = messages.value.map(msg => ({
+    // Preserve threadCount from backend and ensure it's set
+    messages.value = parentMessages.map(msg => ({
       ...msg,
-      reactions: msg.reactions || []
+      threadCount: msg.threadCount || 0, // Preserve threadCount from backend
+      reactions: msg.reactions || [],
+      mentions: msg.mentions || [],
+      readBy: msg.readBy || []
     }))
+    
+    // Mark messages as read when loaded
+    markMessagesAsRead()
     
     scrollToBottom()
   } catch (error) {
@@ -414,6 +466,37 @@ const fetchMessages = async () => {
 const getThreadCount = (message) => {
   // This will be updated when we fetch threads
   return message.threadCount || 0
+}
+
+const getThreadUnreadCount = (message) => {
+  return threadUnreadCounts.value[message._id] || 0
+}
+
+const fetchThreadNotifications = async () => {
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    const response = await axios.get(`${apiUrl}/api/notifications?unreadOnly=true&type=thread_reply`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    const notifications = Array.isArray(response.data) ? response.data : []
+    const counts = {}
+    
+    notifications.forEach(notif => {
+      if (notif.threadParent) {
+        const threadId = notif.threadParent._id || notif.threadParent
+        counts[threadId] = (counts[threadId] || 0) + 1
+      }
+    })
+    
+    threadUnreadCounts.value = counts
+  } catch (error) {
+    console.error('❌ Failed to fetch thread notifications:', error)
+  }
 }
 
 const toggleThread = async (message) => {
@@ -446,6 +529,22 @@ const fetchThreadReplies = async (messageId) => {
     const parentMessage = messages.value.find(m => m._id === messageId)
     if (parentMessage) {
       parentMessage.threadCount = threadReplies.value[messageId].length
+    }
+    
+    // Mark thread notifications as read
+    try {
+      await axios.patch(`${apiUrl}/api/notifications/read/all`, {}, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        params: {
+          threadParent: messageId
+        }
+      })
+      // Clear unread count for this thread
+      threadUnreadCounts.value[messageId] = 0
+    } catch (err) {
+      console.error('Failed to mark thread notifications as read:', err)
     }
     
     // Join thread room for real-time updates
@@ -559,6 +658,12 @@ const setupSocket = () => {
   socket.value.on('connect', () => {
     console.log('🔌 Socket connected, joining channel:', channelId.value)
     socket.value.emit('join_channel', channelId.value)
+    
+    // Join workspace for presence updates
+    if (workspace.value?._id) {
+      const workspaceId = workspace.value._id?._id || workspace.value._id
+      socket.value.emit('join_workspace', workspaceId)
+    }
   })
   
   socket.value.on('disconnect', () => {
@@ -593,6 +698,14 @@ const setupSocket = () => {
           parent.threadCount = (parent.threadCount || 0) + 1
         }
       }
+    }
+  })
+  
+  socket.value.on('notification', (notification) => {
+    // Update thread unread counts
+    if (notification.type === 'thread_reply' && notification.threadParent) {
+      const threadId = notification.threadParent._id || notification.threadParent
+      threadUnreadCounts.value[threadId] = (threadUnreadCounts.value[threadId] || 0) + 1
     }
   })
   
@@ -631,6 +744,40 @@ const setupSocket = () => {
           ...threadReplies.value[threadId][threadIndex],
           reactions: data.reactions || []
         }
+      }
+    }
+  })
+  
+  // Presence updates
+  socket.value.on('user_online', (data) => {
+    // Update user status in workspace
+    if (workspace.value && data.user) {
+      updateUserStatus(data.userId, data.user.status)
+    }
+  })
+  
+  socket.value.on('user_offline', (data) => {
+    // Update user status in workspace
+    if (workspace.value && data.userId) {
+      updateUserStatus(data.userId, 'offline')
+    }
+  })
+  
+  socket.value.on('user_status_changed', (data) => {
+    // Update user status in workspace
+    if (workspace.value && data.user) {
+      updateUserStatus(data.userId, data.user.status)
+    }
+  })
+  
+  // Read receipt updates
+  socket.value.on('message_read', (data) => {
+    // Update readBy in message
+    const index = messages.value.findIndex(m => m._id === data.messageId)
+    if (index >= 0) {
+      messages.value[index] = {
+        ...messages.value[index],
+        readBy: data.readBy || []
       }
     }
   })
@@ -988,6 +1135,98 @@ const handleEnterKey = (event) => {
     if (mentionSuggestions.value[selectedMentionIndex.value]) {
       selectMention(mentionSuggestions.value[selectedMentionIndex.value])
     }
+  }
+}
+
+// Mark messages as read
+const markMessagesAsRead = async () => {
+  if (!channelId.value || !messages.value.length) return
+  
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    // Get message IDs that haven't been read by current user
+    const unreadMessageIds = messages.value
+      .filter(msg => {
+        if (!msg.readBy || !Array.isArray(msg.readBy)) return true
+        const userId = authStore.user?.id || authStore.user?._id
+        if (!userId) return false
+        return !msg.readBy.some(read => {
+          const readUserId = read.user?._id || read.user
+          return readUserId?.toString() === userId.toString()
+        })
+      })
+      .map(msg => msg._id)
+      .slice(0, 50) // Limit to 50 messages at a time
+    
+    if (unreadMessageIds.length > 0) {
+      await axios.post(
+        `${apiUrl}/api/messages/channel/${channelId.value}/read`,
+        { messageIds: unreadMessageIds },
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      )
+    }
+  } catch (error) {
+    console.error('❌ Failed to mark messages as read:', error)
+  }
+}
+
+// Update user status in workspace members
+const updateUserStatus = (userId, status) => {
+  if (!workspaceMembers.value || !userId) return
+  
+  const userIdStr = userId.toString()
+  
+  // Update in workspace members
+  const memberIndex = workspaceMembers.value.findIndex(m => {
+    const mId = (m._id || m.id)?.toString()
+    return mId === userIdStr
+  })
+  
+  if (memberIndex >= 0) {
+    workspaceMembers.value[memberIndex] = {
+      ...workspaceMembers.value[memberIndex],
+      status
+    }
+  }
+  
+  // Update in messages
+  messages.value.forEach((msg, index) => {
+    if (msg.user) {
+      const msgUserId = (msg.user._id || msg.user)?.toString()
+      if (msgUserId === userIdStr) {
+        messages.value[index] = {
+          ...messages.value[index],
+          user: {
+            ...msg.user,
+            status
+          }
+        }
+      }
+    }
+  })
+  
+  // Update in thread replies
+  for (const threadId in threadReplies.value) {
+    threadReplies.value[threadId].forEach((reply, index) => {
+      if (reply.user) {
+        const replyUserId = (reply.user._id || reply.user)?.toString()
+        if (replyUserId === userIdStr) {
+          threadReplies.value[threadId][index] = {
+            ...threadReplies.value[threadId][index],
+            user: {
+              ...reply.user,
+              status
+            }
+          }
+        }
+      }
+    })
   }
 }
 
@@ -1810,6 +2049,70 @@ const formatTime = (date) => {
   color: var(--color-text-muted);
 }
 
+/* User Presence Indicators */
+.user-status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.user-status-indicator.status-online {
+  background: #10b981;
+  box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px #10b98133;
+}
+
+.user-status-indicator.status-away {
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px #f59e0b33;
+}
+
+.user-status-indicator.status-offline {
+  background: #6b7280;
+  box-shadow: 0 0 0 2px var(--color-bg), 0 0 0 4px #6b728033;
+}
+
+/* Read Receipts */
+.read-receipts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.read-receipts-label {
+  font-size: var(--text-xs);
+}
+
+.read-receipts-avatars {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.read-receipt-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-bg-alt);
+  border: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: help;
+}
+
+.read-receipt-more {
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+
 /* Channel header */
 .channel-header {
   display: flex;
@@ -1836,6 +2139,18 @@ const formatTime = (date) => {
 .btn-icon:hover {
   background: var(--color-bg-alt);
   transform: scale(1.1);
+}
+
+.thread-unread-badge {
+  background: var(--matisse-red);
+  color: white;
+  border-radius: 10px;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+  margin-left: var(--space-1);
 }
 </style>
 

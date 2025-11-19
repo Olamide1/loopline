@@ -14,6 +14,8 @@ import fileRoutes from './routes/file.js'
 import integrationRoutes from './routes/integration.js'
 import adminRoutes from './routes/admin.js'
 import searchRoutes from './routes/search.js'
+import directMessageRoutes from './routes/directMessage.js'
+import notificationRoutes from './routes/notification.js'
 
 import { setupSocketIO } from './socket/socket.js'
 import { startRetentionScheduler } from './jobs/retention.js'
@@ -58,12 +60,15 @@ app.use('/api/files', fileRoutes)
 app.use('/api/integrations', integrationRoutes)
 app.use('/api/admin', adminRoutes)
 app.use('/api/search', searchRoutes)
+app.use('/api/direct-messages', directMessageRoutes)
+app.use('/api/notifications', notificationRoutes)
 
 // Socket.IO setup
 setupSocketIO(io)
 
 // Make io available to routes for broadcasting
 app.set('io', io)
+global.io = io // Also make available globally for notification helper
 
 // MongoDB connection with retry logic
 const connectMongoDB = async (retries = 10, delay = 2000) => {

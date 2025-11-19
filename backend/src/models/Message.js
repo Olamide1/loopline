@@ -61,6 +61,16 @@ const messageSchema = new mongoose.Schema({
     type: Date,
     index: true
   },
+  readBy: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    readAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   createdAt: {
     type: Date,
     default: Date.now,

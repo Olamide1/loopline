@@ -21,6 +21,12 @@ const routes = [
     meta: { requiresAuth: false }
   },
   {
+    path: '/invite',
+    name: 'Invite',
+    component: () => import('../views/Invite.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/workspace',
     name: 'WorkspaceSelect',
     component: () => import('../views/WorkspaceSelect.vue'),
@@ -42,6 +48,18 @@ const routes = [
         path: 'admin',
         name: 'AdminDashboard',
         component: () => import('../views/AdminDashboard.vue'),
+        meta: { requiresAuth: true }
+      },
+      {
+        path: 'dm',
+        name: 'DirectMessages',
+        component: () => import('../views/DirectMessages.vue'),
+        meta: { requiresAuth: true }
+      },
+      {
+        path: 'dm/:conversationId',
+        name: 'DirectMessageChat',
+        component: () => import('../views/DirectMessageChat.vue'),
         meta: { requiresAuth: true }
       }
     ]

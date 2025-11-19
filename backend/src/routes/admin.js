@@ -1,4 +1,5 @@
 import express from 'express'
+import mongoose from 'mongoose'
 import { authenticate } from '../middleware/auth.js'
 import Workspace from '../models/Workspace.js'
 import Channel from '../models/Channel.js'
@@ -10,17 +11,212 @@ import { isWorkspaceAdmin } from '../utils/workspaceAuth.js'
 const router = express.Router()
 router.use(authenticate)
 
+// Helper function to generate invite code
+const generateInviteCode = () => {
+  const prefix = 'LOOP'
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  let code = prefix + '-'
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length))
+    }
+    if (i < 2) code += '-'
+  }
+  return code
+}
+
+// Centralized helper to safely convert workspace._id to ObjectId
+// Handles all edge cases: ObjectId, string, populated objects, etc.
+const safeWorkspaceIdToObjectId = (workspaceId) => {
+  try {
+    // If it's already a valid ObjectId instance, return it
+    if (workspaceId instanceof mongoose.Types.ObjectId) {
+      return workspaceId
+    }
+    
+    // If it's a string, validate and convert
+    if (typeof workspaceId === 'string') {
+      if (mongoose.Types.ObjectId.isValid(workspaceId)) {
+        return new mongoose.Types.ObjectId(workspaceId)
+      }
+      throw new Error(`Invalid ObjectId string: ${workspaceId}`)
+    }
+    
+    // If it has a toString method, use it
+    if (workspaceId && typeof workspaceId.toString === 'function') {
+      const idStr = workspaceId.toString()
+      if (mongoose.Types.ObjectId.isValid(idStr)) {
+        return new mongoose.Types.ObjectId(idStr)
+      }
+      throw new Error(`Invalid ObjectId from toString(): ${idStr}`)
+    }
+    
+    // If it's an object with an _id property (populated object)
+    if (workspaceId && typeof workspaceId === 'object' && workspaceId._id) {
+      return safeWorkspaceIdToObjectId(workspaceId._id)
+    }
+    
+    // Last resort: try to convert to string
+    const idStr = String(workspaceId)
+    if (idStr === '[object Object]') {
+      throw new Error('Cannot convert object to ObjectId - got "[object Object]"')
+    }
+    if (mongoose.Types.ObjectId.isValid(idStr)) {
+      return new mongoose.Types.ObjectId(idStr)
+    }
+    
+    throw new Error(`Cannot convert to ObjectId: ${JSON.stringify(workspaceId)}`)
+  } catch (error) {
+    console.error('❌ [Admin] safeWorkspaceIdToObjectId error:', error)
+    console.error('   Input type:', typeof workspaceId)
+    console.error('   Input value:', workspaceId)
+    throw new Error(`Failed to convert workspace ID to ObjectId: ${error.message}`)
+  }
+}
+
+// Helper to ensure workspace has inviteCode
+const ensureInviteCode = async (workspace) => {
+  try {
+    if (!workspace || !workspace._id) {
+      console.error('❌ [Admin] ensureInviteCode: Invalid workspace object')
+      return workspace
+    }
+    
+    // If workspace already has inviteCode, we're done
+    if (workspace.inviteCode) {
+      console.log(`✅ [Admin] Workspace already has invite code: ${workspace.inviteCode}`)
+      return workspace
+    }
+    
+    console.log(`🔑 [Admin] Generating invite code for workspace: ${workspace._id}`)
+    console.log(`   Workspace._id type: ${typeof workspace._id}, value: ${workspace._id}`)
+    
+    // Safely convert workspace._id to ObjectId using centralized helper
+    // Do this ONCE and reuse it for all operations
+    let workspaceObjectId
+    try {
+      workspaceObjectId = safeWorkspaceIdToObjectId(workspace._id)
+      console.log(`   ✅ [Admin] Converted workspace ID to ObjectId: ${workspaceObjectId}`)
+      
+      // Validate it's actually a valid ObjectId
+      if (!(workspaceObjectId instanceof mongoose.Types.ObjectId)) {
+        throw new Error(`Conversion returned invalid type: ${typeof workspaceObjectId}`)
+      }
+    } catch (idError) {
+      console.error('❌ [Admin] Error converting workspace._id to ObjectId:', idError)
+      throw new Error(`Invalid workspace ID: ${idError.message}`)
+    }
+    
+    let inviteCode
+    let isUnique = false
+    let attempts = 0
+    const maxAttempts = 10
+    
+    while (!isUnique && attempts < maxAttempts) {
+      inviteCode = generateInviteCode()
+      console.log(`   [Admin] Attempt ${attempts + 1}: Generated code: ${inviteCode}`)
+      
+      try {
+        // Use the validated ObjectId in the query
+        const existing = await Workspace.findOne({ 
+          inviteCode, 
+          _id: { $ne: workspaceObjectId }
+        })
+        
+        if (!existing) {
+          isUnique = true
+          console.log(`   ✅ [Admin] Code is unique: ${inviteCode}`)
+        } else {
+          console.log(`   ⚠️ [Admin] Code already exists, trying again...`)
+          attempts++
+        }
+      } catch (findError) {
+        console.error('❌ [Admin] Error checking for existing invite code:', findError)
+        console.error('   findError details:', {
+          message: findError.message,
+          name: findError.name,
+          code: findError.code
+        })
+        // Don't throw - just try next code
+        attempts++
+        if (attempts >= maxAttempts) {
+          throw new Error(`Failed to check code uniqueness after ${maxAttempts} attempts: ${findError.message}`)
+        }
+      }
+    }
+    
+    if (!isUnique) {
+      throw new Error(`Failed to generate unique invite code after ${maxAttempts} attempts`)
+    }
+    
+    // Use findByIdAndUpdate instead of save() to avoid issues with populated documents
+    // Reuse the already-validated workspaceObjectId
+    
+    console.log(`💾 [Admin] Saving workspace with invite code: ${inviteCode}`)
+    
+    try {
+      // Use string representation for findByIdAndUpdate to avoid any casting issues
+      const workspaceIdStr = workspaceObjectId.toString()
+      const updated = await Workspace.findByIdAndUpdate(
+        workspaceIdStr,
+        { inviteCode },
+        { new: true, runValidators: true }
+      )
+      
+      if (!updated) {
+        throw new Error('Workspace not found when trying to update invite code')
+      }
+      
+      // Update the workspace object in memory so it reflects the change
+      workspace.inviteCode = inviteCode
+      
+      console.log(`✅ [Admin] Successfully saved invite code for workspace: ${workspaceIdStr}`)
+    } catch (saveError) {
+      console.error('❌ [Admin] Error saving workspace with invite code:', saveError)
+      console.error('   Error details:', {
+        message: saveError.message,
+        name: saveError.name,
+        code: saveError.code,
+        keyPattern: saveError.keyPattern,
+        keyValue: saveError.keyValue
+      })
+      throw saveError
+    }
+    
+    return workspace
+  } catch (error) {
+    console.error('❌ [Admin] ensureInviteCode failed:', error)
+    console.error('   Workspace ID:', workspace?._id)
+    console.error('   Workspace ID type:', typeof workspace?._id)
+    console.error('   Error stack:', error.stack)
+    // Re-throw so calling function can handle it
+    throw error
+  }
+}
+
 // Get workspace settings
 router.get('/workspace/:id/settings', async (req, res) => {
   try {
+    console.log(`📋 [Admin] Fetching settings for workspace: ${req.params.id}`)
     const workspace = await Workspace.findById(req.params.id)
     
     if (!workspace) {
+      console.error(`❌ [Admin] Workspace not found: ${req.params.id}`)
       return res.status(404).json({ message: 'Workspace not found' })
     }
     
     if (!isWorkspaceAdmin(workspace, req.user._id)) {
+      console.error(`❌ [Admin] Access denied for user ${req.user._id}`)
       return res.status(403).json({ message: 'Only admin can view settings' })
+    }
+    
+    // Ensure workspace has inviteCode (for existing workspaces)
+    try {
+      await ensureInviteCode(workspace)
+      console.log(`✅ [Admin] Workspace ready, inviteCode: ${workspace.inviteCode}`)
+    } catch (inviteError) {
+      console.error('❌ [Admin] Failed to ensure invite code:', inviteError)
+      // Continue anyway - return what we have
     }
     
     res.json({
@@ -28,10 +224,22 @@ router.get('/workspace/:id/settings', async (req, res) => {
       settings: workspace.settings,
       driveLinked: workspace.driveLinked,
       driveFolderId: workspace.driveFolderId,
-      subscriptionStatus: workspace.subscriptionStatus
+      subscriptionStatus: workspace.subscriptionStatus,
+      inviteCode: workspace.inviteCode
     })
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch settings', error: error.message })
+    console.error('❌ [Admin] Failed to fetch settings:', error)
+    console.error('   Error details:', {
+      message: error.message,
+      name: error.name,
+      code: error.code,
+      stack: error.stack
+    })
+    res.status(500).json({ 
+      message: 'Failed to fetch settings', 
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    })
   }
 })
 

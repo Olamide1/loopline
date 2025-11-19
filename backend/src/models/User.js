@@ -11,14 +11,7 @@ const userSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    required: function() {
-      return !this.googleId
-    }
-  },
-  googleId: {
-    type: String,
-    sparse: true,
-    unique: true
+    required: true
   },
   name: {
     type: String,
@@ -31,6 +24,15 @@ const userSchema = new mongoose.Schema({
     type: String,
     enum: ['admin', 'member'],
     default: 'member'
+  },
+  status: {
+    type: String,
+    enum: ['online', 'offline', 'away'],
+    default: 'offline'
+  },
+  lastSeen: {
+    type: Date,
+    default: Date.now
   },
   workspaces: [{
     type: mongoose.Schema.Types.ObjectId,

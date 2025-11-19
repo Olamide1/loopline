@@ -97,8 +97,15 @@ router.post('/', async (req, res) => {
     await message.save()
     
     // Populate user and mentions for response
-    await message.populate('user', 'name email avatar')
-    await message.populate('mentions', 'name email avatar')
+    await message.populate('user', 'name email avatar status')
+    await message.populate('mentions', 'name email avatar status')
+    await message.populate('readBy.user', 'name email avatar status')
+    
+    // Create notification if this is a thread reply
+    if (threadParent) {
+      const { createThreadNotification } = await import('./notification.js')
+      await createThreadNotification(message, threadParent)
+    }
     
     res.status(201).json(message)
   } catch (error) {
@@ -133,11 +140,52 @@ router.get('/channel/:channelId', async (req, res) => {
     }
     
     const messages = await Message.find(query)
-      .populate('user', 'name email avatar')
+      .populate('user', 'name email avatar status')
       .populate('threadParent')
+      .populate('mentions', 'name email avatar status')
+      .populate('reactions.users', 'name email avatar status')
+      .populate('readBy.user', 'name email avatar status')
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
       .lean()
+    
+    // Calculate thread counts for parent messages
+    const parentMessageIds = messages
+      .filter(msg => !msg.threadParent)
+      .map(msg => msg._id)
+    
+    if (parentMessageIds.length > 0) {
+      // Count replies for each parent message
+      const threadCounts = await Message.aggregate([
+        {
+          $match: {
+            threadParent: { $in: parentMessageIds },
+            deleted: false
+          }
+        },
+        {
+          $group: {
+            _id: '$threadParent',
+            count: { $sum: 1 }
+          }
+        }
+      ])
+      
+      // Create a map of messageId -> threadCount
+      const threadCountMap = {}
+      threadCounts.forEach(item => {
+        threadCountMap[item._id.toString()] = item.count
+      })
+      
+      // Add threadCount to each parent message
+      messages.forEach(msg => {
+        if (!msg.threadParent && threadCountMap[msg._id.toString()]) {
+          msg.threadCount = threadCountMap[msg._id.toString()]
+        } else if (!msg.threadParent) {
+          msg.threadCount = 0
+        }
+      })
+    }
     
     res.json(messages.reverse()) // Reverse to show oldest first
   } catch (error) {
@@ -154,7 +202,8 @@ router.get('/thread/:messageId', async (req, res) => {
       threadParent: messageId,
       deleted: false
     })
-      .populate('user', 'name email avatar')
+      .populate('user', 'name email avatar status')
+      .populate('readBy.user', 'name email avatar status')
       .sort({ createdAt: 1 })
     
     res.json(messages)
@@ -181,7 +230,8 @@ router.patch('/:id', async (req, res) => {
     message.text = text
     await message.save()
     
-    await message.populate('user', 'name email avatar')
+    await message.populate('user', 'name email avatar status')
+    await message.populate('readBy.user', 'name email avatar status')
     res.json(message)
   } catch (error) {
     res.status(500).json({ message: 'Failed to update message', error: error.message })
@@ -261,9 +311,10 @@ router.post('/:id/reaction', async (req, res) => {
     }
     
     await message.save()
-    await message.populate('user', 'name email avatar')
-    await message.populate('mentions', 'name email avatar')
-    await message.populate('reactions.users', 'name email avatar')
+    await message.populate('user', 'name email avatar status')
+    await message.populate('mentions', 'name email avatar status')
+    await message.populate('reactions.users', 'name email avatar status')
+    await message.populate('readBy.user', 'name email avatar status')
     
     // Broadcast reaction update via Socket.IO
     const io = req.app.get('io')
@@ -293,6 +344,109 @@ router.post('/:id/reaction', async (req, res) => {
     res.json(message)
   } catch (error) {
     res.status(500).json({ message: 'Failed to add reaction', error: error.message })
+  }
+})
+
+// Mark message as read
+router.post('/:id/read', async (req, res) => {
+  try {
+    const { id } = req.params
+    const message = await Message.findById(id)
+    
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' })
+    }
+    
+    // Check if user already marked as read
+    const existingRead = message.readBy.find(
+      read => read.user.toString() === req.user._id.toString()
+    )
+    
+    if (!existingRead) {
+      message.readBy.push({
+        user: req.user._id,
+        readAt: new Date()
+      })
+      await message.save()
+    }
+    
+    // Populate readBy for response
+    await message.populate('readBy.user', 'name email avatar')
+    
+    // Broadcast read receipt update via Socket.IO
+    const io = req.app.get('io')
+    if (io) {
+      const channelId = message.channel.toString()
+      const messageObj = message.toObject ? message.toObject() : message
+      
+      io.to(`channel:${channelId}`).emit('message_read', {
+        messageId: messageObj._id,
+        readBy: messageObj.readBy || [],
+        channel: channelId
+      })
+    }
+    
+    res.json({ success: true, readBy: message.readBy })
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to mark message as read', error: error.message })
+  }
+})
+
+// Mark multiple messages as read (for channel view)
+router.post('/channel/:channelId/read', async (req, res) => {
+  try {
+    const { channelId } = req.params
+    const { messageIds } = req.body // Array of message IDs
+    
+    if (!Array.isArray(messageIds) || messageIds.length === 0) {
+      return res.status(400).json({ message: 'messageIds array is required' })
+    }
+    
+    // Verify channel access
+    const channel = await Channel.findById(channelId)
+    if (!channel) {
+      return res.status(404).json({ message: 'Channel not found' })
+    }
+    
+    // Update all messages
+    const updatePromises = messageIds.map(async (messageId) => {
+      const message = await Message.findById(messageId)
+      if (message && message.channel.toString() === channelId) {
+        const existingRead = message.readBy.find(
+          read => read.user.toString() === req.user._id.toString()
+        )
+        
+        if (!existingRead) {
+          message.readBy.push({
+            user: req.user._id,
+            readAt: new Date()
+          })
+          await message.save()
+        }
+      }
+    })
+    
+    await Promise.all(updatePromises)
+    
+    // Broadcast read receipts for all messages
+    const io = req.app.get('io')
+    if (io) {
+      const messages = await Message.find({ _id: { $in: messageIds } })
+        .populate('readBy.user', 'name email avatar')
+      
+      messages.forEach(message => {
+        const messageObj = message.toObject ? message.toObject() : message
+        io.to(`channel:${channelId}`).emit('message_read', {
+          messageId: messageObj._id,
+          readBy: messageObj.readBy || [],
+          channel: channelId
+        })
+      })
+    }
+    
+    res.json({ success: true, count: messageIds.length })
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to mark messages as read', error: error.message })
   }
 })
 

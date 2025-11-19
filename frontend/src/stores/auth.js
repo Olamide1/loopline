@@ -8,19 +8,20 @@ export const useAuthStore = defineStore('auth', () => {
   
   const isAuthenticated = computed(() => !!token.value && !!user.value)
   
-  const register = async (name, email, password) => {
+  const register = async (name, email, password, inviteCode) => {
     // Use proxy from vite.config.js (routes /api to http://localhost:3000)
     const apiUrl = import.meta.env.VITE_API_URL || ''
     const url = `${apiUrl}/api/auth/register`
     
-    console.log('📝 Frontend: Starting registration...', { name, email, url, apiUrl })
+    console.log('📝 Frontend: Starting registration...', { name, email, inviteCode, url, apiUrl })
     
     try {
       console.log('📤 Frontend: Sending registration request to:', url)
       const response = await axios.post(url, {
         name,
         email,
-        password
+        password,
+        inviteCode
       })
       
       console.log('✅ Frontend: Registration successful', response.data)
@@ -31,7 +32,10 @@ export const useAuthStore = defineStore('auth', () => {
       
       axios.defaults.headers.common['Authorization'] = `Bearer ${token.value}`
       
-      return { success: true }
+      return { 
+        success: true,
+        workspaceId: response.data.workspaceId || null
+      }
     } catch (error) {
       console.error('❌ Frontend: Registration failed', {
         message: error.message,
