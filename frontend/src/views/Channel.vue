@@ -4,10 +4,90 @@
       <div class="channel-header-left">
         <h2 class="heading-2"># {{ channel?.name }}</h2>
         <p v-if="channel?.description" class="text-muted" style="margin-top: var(--space-2);">{{ channel.description }}</p>
+        <div v-if="channel?.privacy === 'private'" class="channel-privacy-badge" style="margin-top: var(--space-2); display: inline-block; padding: var(--space-1) var(--space-2); background: var(--color-bg-alt); border: 2px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase;">
+          🔒 Private Channel
+        </div>
       </div>
-      <button @click="showSearch = true" class="btn-icon" title="Search messages">
-        🔍
-      </button>
+      <div style="display: flex; gap: var(--space-2); align-items: center;">
+        <button v-if="channel?.privacy === 'private' && canManageChannelMembers" @click="showChannelMembers = !showChannelMembers" class="btn-icon" title="Manage Members">
+          👥
+        </button>
+        <button @click="showSearch = true" class="btn-icon" title="Search messages">
+          🔍
+        </button>
+      </div>
+    </div>
+    
+    <!-- Channel Members Panel (Private Channels Only) -->
+    <div v-if="showChannelMembers && channel?.privacy === 'private'" class="channel-members-panel" style="padding: var(--space-4); background: var(--color-bg-alt); border-bottom: 2px solid var(--color-border); margin-bottom: var(--space-4);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
+        <h3 class="heading-4" style="margin: 0;">Channel Members</h3>
+        <button @click="showChannelMembers = false" class="btn-icon" style="font-size: var(--text-lg);">✕</button>
+      </div>
+      
+      <!-- Current Members -->
+      <div style="margin-bottom: var(--space-4);">
+        <h4 style="font-size: var(--text-sm); font-weight: 600; margin-bottom: var(--space-2); text-transform: uppercase; letter-spacing: 0.5px;">Current Members ({{ channelMembers.length }})</h4>
+        <div style="display: flex; flex-direction: column; gap: var(--space-2);">
+          <div
+            v-for="member in channelMembers"
+            :key="member._id || member.id"
+            style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-2); background: var(--color-bg); border: 2px solid var(--color-border); border-radius: var(--radius-sm);"
+          >
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--matisse-yellow); border: 2px solid var(--color-border); display: flex; align-items: center; justify-content: center; font-size: var(--text-sm); font-weight: 700; text-transform: uppercase;">
+                {{ (member.name || 'U').charAt(0) }}
+              </div>
+              <div>
+                <div style="font-weight: 600; font-size: var(--text-sm);">{{ member.name }}</div>
+                <div style="font-size: var(--text-xs); color: var(--color-text-muted);">{{ member.email }}</div>
+              </div>
+            </div>
+            <button
+              v-if="canRemoveMember(member)"
+              @click="removeChannelMember(member)"
+              class="btn btn-secondary"
+              style="padding: var(--space-1) var(--space-2); font-size: var(--text-xs);"
+              :disabled="removingMember"
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Add Members -->
+      <div v-if="availableMembersToAdd.length > 0">
+        <h4 style="font-size: var(--text-sm); font-weight: 600; margin-bottom: var(--space-2); text-transform: uppercase; letter-spacing: 0.5px;">Add Members</h4>
+        <div style="display: flex; flex-direction: column; gap: var(--space-2); max-height: 300px; overflow-y: auto;">
+          <div
+            v-for="member in availableMembersToAdd"
+            :key="member._id || member.id"
+            style="display: flex; align-items: center; justify-content: space-between; padding: var(--space-2); background: var(--color-bg); border: 2px solid var(--color-border); border-radius: var(--radius-sm);"
+          >
+            <div style="display: flex; align-items: center; gap: var(--space-2);">
+              <div style="width: 32px; height: 32px; border-radius: 50%; background: var(--color-bg-alt); border: 2px solid var(--color-border); display: flex; align-items: center; justify-content: center; font-size: var(--text-sm); font-weight: 700; text-transform: uppercase;">
+                {{ (member.name || 'U').charAt(0) }}
+              </div>
+              <div>
+                <div style="font-weight: 600; font-size: var(--text-sm);">{{ member.name }}</div>
+                <div style="font-size: var(--text-xs); color: var(--color-text-muted);">{{ member.email }}</div>
+              </div>
+            </div>
+            <button
+              @click="addChannelMember(member)"
+              class="btn btn-accent"
+              style="padding: var(--space-1) var(--space-2); font-size: var(--text-xs);"
+              :disabled="addingMember"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      </div>
+      <div v-else style="padding: var(--space-3); text-align: center; color: var(--color-text-muted); font-size: var(--text-sm); background: var(--color-bg); border: 2px solid var(--color-border); border-radius: var(--radius-sm);">
+        All workspace members are already in this channel
+      </div>
     </div>
     
     <div class="messages-container" ref="messagesContainer">
@@ -19,16 +99,20 @@
         :key="message._id"
         :data-message-id="message._id"
         class="message-item"
-        :class="{ 'is-thread-reply': message.threadParent, 'message-deleted': message.deleted }"
+        :class="{ 
+          'is-thread-reply': message.threadParent, 
+          'message-deleted': message.deleted,
+          'is-own-message': isOwnMessage(message)
+        }"
       >
-        <div class="message-avatar">
+        <div v-if="!isOwnMessage(message)" class="message-avatar">
           <div class="avatar-circle">
             {{ message.user?.name?.charAt(0)?.toUpperCase() || 'U' }}
           </div>
         </div>
-        <div class="message-content" @mouseenter="showMessageActions(message._id)" @mouseleave="hideMessageActions(message._id)">
-          <div class="message-header">
-            <div class="message-author-wrapper">
+        <div class="message-content" :class="{ 'own-message-content': isOwnMessage(message) }" @mouseenter="showMessageActions(message._id)" @mouseleave="hideMessageActions(message._id)">
+          <div class="message-header" :class="{ 'own-message-header': isOwnMessage(message) }">
+            <div v-if="!isOwnMessage(message)" class="message-author-wrapper">
               <span class="message-author">{{ message.user?.name || 'Unknown' }}</span>
               <span 
                 v-if="message.user?.status" 
@@ -37,8 +121,13 @@
                 :title="message.user.status === 'online' ? 'Online' : message.user.status === 'away' ? 'Away' : 'Offline'"
               ></span>
             </div>
-            <span v-if="formatTime(message.createdAt)" class="message-time">{{ formatTime(message.createdAt) }}</span>
-            <span v-if="message.edited" class="message-edited">(edited)</span>
+            <div v-else class="message-author-wrapper">
+              <span class="message-author own-message-label">You</span>
+            </div>
+            <div class="message-time-wrapper">
+              <span v-if="formatTime(message.createdAt)" class="message-time">{{ formatTime(message.createdAt) }}</span>
+              <span v-if="message.edited" class="message-edited">(edited)</span>
+            </div>
           </div>
           
           <!-- Read Receipts -->
@@ -73,14 +162,14 @@
             </div>
           </div>
           <div v-else-if="message.text" class="message-text" v-html="formatMessageText(message)"></div>
-          <div v-if="message.files?.length" class="message-files">
+          <div v-if="message.files?.length" class="message-files" :class="{ 'own-message-files': isOwnMessage(message) }">
             <div v-for="file in message.files" :key="file.driveFileId" class="file-item">
               <a :href="file.driveUrl" target="_blank">{{ file.name }}</a>
             </div>
           </div>
           
           <!-- Reactions -->
-          <div v-if="message.reactions && message.reactions.length > 0" class="message-reactions">
+          <div v-if="message.reactions && message.reactions.length > 0" class="message-reactions" :class="{ 'own-message-reactions': isOwnMessage(message) }">
             <button
               v-for="reaction in message.reactions"
               :key="reaction.emoji"
@@ -252,6 +341,7 @@ import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { io } from 'socket.io-client'
 import { useAuthStore } from '../stores/auth'
+import { useWorkspaceAuth } from '../composables/useWorkspaceAuth'
 
 const route = useRoute()
 const authStore = useAuthStore()
@@ -285,6 +375,11 @@ const searching = ref(false)
 
 // Notifications
 const threadUnreadCounts = ref({}) // Map of messageId -> count
+
+// Channel members management (private channels)
+const showChannelMembers = ref(false)
+const addingMember = ref(false)
+const removingMember = ref(false)
 
 // Mention autocomplete
 const showMentionAutocomplete = ref(false)
@@ -353,10 +448,15 @@ const fetchChannel = async () => {
     })
     channel.value = response.data
   } catch (error) {
-    console.error('❌ Failed to fetch channel:', error)
-    if (error.response?.status === 401) {
-      authStore.logout()
-      window.location.href = '/login'
+    if (error.response?.status === 429) {
+      console.warn('⚠️ Rate limited on channel fetch, will retry later')
+      // Don't clear channel on rate limit, keep existing data
+    } else {
+      console.error('❌ Failed to fetch channel:', error)
+      if (error.response?.status === 401) {
+        authStore.logout()
+        window.location.href = '/login'
+      }
     }
   }
 }
@@ -452,13 +552,21 @@ const fetchMessages = async () => {
     // Mark messages as read when loaded
     markMessagesAsRead()
     
+    // Mark channel as read
+    markChannelAsRead()
+    
     scrollToBottom()
   } catch (error) {
-    console.error('❌ Failed to fetch messages:', error)
-    messages.value = []
-    if (error.response?.status === 401) {
-      authStore.logout()
-      window.location.href = '/login'
+    if (error.response?.status === 429) {
+      console.warn('⚠️ Rate limited on messages fetch, will retry later')
+      // Don't clear messages on rate limit, keep existing data
+    } else {
+      console.error('❌ Failed to fetch messages:', error)
+      messages.value = []
+      if (error.response?.status === 401) {
+        authStore.logout()
+        window.location.href = '/login'
+      }
     }
   }
 }
@@ -495,7 +603,12 @@ const fetchThreadNotifications = async () => {
     
     threadUnreadCounts.value = counts
   } catch (error) {
-    console.error('❌ Failed to fetch thread notifications:', error)
+    if (error.response?.status === 429) {
+      console.warn('⚠️ Rate limited on thread notifications fetch, will retry later')
+      // Don't clear counts on rate limit, keep existing data
+    } else {
+      console.error('❌ Failed to fetch thread notifications:', error)
+    }
   }
 }
 
@@ -657,12 +770,18 @@ const setupSocket = () => {
   
   socket.value.on('connect', () => {
     console.log('🔌 Socket connected, joining channel:', channelId.value)
-    socket.value.emit('join_channel', channelId.value)
     
-    // Join workspace for presence updates
+    // Join channel room for messages
+    if (channelId.value) {
+      socket.value.emit('join_channel', channelId.value.toString())
+    }
+    
+    // Join workspace for presence updates and sidebar updates
     if (workspace.value?._id) {
       const workspaceId = workspace.value._id?._id || workspace.value._id
-      socket.value.emit('join_workspace', workspaceId)
+      if (workspaceId) {
+        socket.value.emit('join_workspace', workspaceId.toString())
+      }
     }
   })
   
@@ -675,12 +794,38 @@ const setupSocket = () => {
   })
   
   socket.value.on('message_created', (message) => {
+    console.log('📨 Message created in channel view:', message)
+    
+    // Normalize channel ID comparison
+    const messageChannelId = message.channel?.toString() || message.channel?._id?.toString() || message.channel
+    const currentChannelId = channelId.value?.toString()
+    
     // Only add if it's for this channel and not a thread reply
-    if (message.channel === channelId.value || message.channel?._id === channelId.value) {
+    if (messageChannelId === currentChannelId) {
       if (!message.threadParent && !messages.value.find(m => m._id === message._id)) {
-        messages.value.push(message)
+        // Ensure message has all required fields
+        const newMessage = {
+          ...message,
+          channel: currentChannelId,
+          reactions: message.reactions || [],
+          mentions: message.mentions || [],
+          readBy: message.readBy || [],
+          threadCount: message.threadCount || 0
+        }
+        messages.value.push(newMessage)
+        console.log('✅ Added message to channel view:', newMessage._id)
         scrollToBottom()
+        
+        // Mark as read if viewing the channel (with a small delay to ensure message is rendered)
+        setTimeout(() => {
+          markMessagesAsRead()
+          markChannelAsRead()
+        }, 100)
+      } else {
+        console.log('⚠️ Message already exists or is a thread reply, skipping')
       }
+    } else {
+      console.log('⚠️ Message is for different channel:', messageChannelId, 'current:', currentChannelId)
     }
   })
   
@@ -811,11 +956,15 @@ const setupSocket = () => {
 }
 
 // Message editing/deleting functions
-const canEditMessage = (message) => {
+const isOwnMessage = (message) => {
   if (!message || !authStore.user) return false
   const userId = authStore.user._id || authStore.user.id
   const messageUserId = message.user?._id || message.user
   return userId?.toString() === messageUserId?.toString()
+}
+
+const canEditMessage = (message) => {
+  return isOwnMessage(message)
 }
 
 const canDeleteMessage = (message) => {
@@ -1139,6 +1288,29 @@ const handleEnterKey = (event) => {
 }
 
 // Mark messages as read
+const markChannelAsRead = async () => {
+  if (!channelId.value) return
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    await axios.post(`${apiUrl}/api/channels/${channelId.value}/read`, {}, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    // Emit event to update channel list in workspace
+    if (socket.value) {
+      socket.value.emit('channel_read', { channelId: channelId.value.toString() })
+    }
+    
+    console.log('✅ Channel marked as read:', channelId.value)
+  } catch (error) {
+    console.error('❌ Failed to mark channel as read:', error)
+  }
+}
+
 const markMessagesAsRead = async () => {
   if (!channelId.value || !messages.value.length) return
   
@@ -1295,6 +1467,143 @@ const formatMessageText = (message) => {
 }
 
 // Cleanup socket on unmount
+// Channel members management (private channels)
+const canManageChannelMembers = computed(() => {
+  if (!channel.value || !workspace.value || !authStore.user) return false
+  
+  const userId = authStore.user._id || authStore.user.id
+  const workspaceId = workspace.value._id || workspace.value.id
+  
+  // Workspace admin can manage
+  const isAdmin = workspace.value.admin?._id?.toString() === userId?.toString() ||
+                  workspace.value.admin?.toString() === userId?.toString()
+  
+  // Channel creator or admin can manage
+  return isAdmin
+})
+
+const channelMembers = computed(() => {
+  if (!channel.value || !channel.value.members) return []
+  return channel.value.members.map(member => {
+    const memberId = member._id || member.id || member
+    // Find full user details from workspace members
+    const fullMember = workspaceMembers.value.find(wm => {
+      const wmId = wm._id || wm.id
+      return wmId?.toString() === memberId?.toString()
+    })
+    return fullMember || {
+      _id: memberId,
+      id: memberId,
+      name: member.name || 'Unknown',
+      email: member.email || '',
+      avatar: member.avatar
+    }
+  })
+})
+
+const availableMembersToAdd = computed(() => {
+  if (!channel.value || !workspaceMembers.value) return []
+  
+  const channelMemberIds = channelMembers.value.map(m => (m._id || m.id)?.toString())
+  return workspaceMembers.value.filter(member => {
+    const memberId = (member._id || member.id)?.toString()
+    return !channelMemberIds.includes(memberId)
+  })
+})
+
+const canRemoveMember = (member) => {
+  if (!canManageChannelMembers.value) return false
+  if (!channel.value || !authStore.user) return false
+  
+  const userId = authStore.user._id || authStore.user.id
+  const memberId = member._id || member.id
+  
+  // Can't remove yourself
+  if (userId?.toString() === memberId?.toString()) return false
+  
+  // Workspace admin can remove anyone
+  const workspaceId = workspace.value._id || workspace.value.id
+  const isAdmin = workspace.value.admin?._id?.toString() === userId?.toString() ||
+                  workspace.value.admin?.toString() === userId?.toString()
+  
+  return isAdmin
+}
+
+const addChannelMember = async (member) => {
+  if (addingMember.value || !channel.value || !canManageChannelMembers.value) return
+  
+  addingMember.value = true
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    // Get current members
+    const currentMemberIds = (channel.value.members || []).map(m => {
+      const id = m._id || m.id || m
+      return id.toString()
+    })
+    
+    // Add new member
+    const memberId = member._id || member.id
+    const updatedMembers = [...currentMemberIds, memberId.toString()]
+    
+    // Update channel
+    const response = await axios.patch(`${apiUrl}/api/channels/${channel.value._id}`, {
+      members: updatedMembers
+    }, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    console.log('✅ Member added to channel:', response.data)
+    
+    // Refresh channel data
+    await fetchChannel()
+  } catch (error) {
+    console.error('❌ Failed to add member to channel:', error)
+    alert(error.response?.data?.message || 'Failed to add member to channel')
+  } finally {
+    addingMember.value = false
+  }
+}
+
+const removeChannelMember = async (member) => {
+  if (removingMember.value || !channel.value || !canRemoveMember(member)) return
+  
+  removingMember.value = true
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    
+    // Get current members and filter out the one to remove
+    const memberId = (member._id || member.id)?.toString()
+    const currentMemberIds = (channel.value.members || []).map(m => {
+      const id = m._id || m.id || m
+      return id.toString()
+    }).filter(id => id !== memberId)
+    
+    // Update channel
+    const response = await axios.patch(`${apiUrl}/api/channels/${channel.value._id}`, {
+      members: currentMemberIds
+    }, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    console.log('✅ Member removed from channel:', response.data)
+    
+    // Refresh channel data
+    await fetchChannel()
+  } catch (error) {
+    console.error('❌ Failed to remove member from channel:', error)
+    alert(error.response?.data?.message || 'Failed to remove member from channel')
+  } finally {
+    removingMember.value = false
+  }
+}
+
 onBeforeUnmount(() => {
   if (socket.value) {
     socket.value.disconnect()
@@ -1370,6 +1679,17 @@ const formatTime = (date) => {
   position: relative;
 }
 
+.message-item.is-own-message {
+  flex-direction: row-reverse;
+}
+
+.message-item.is-own-message:hover {
+  background: var(--color-bg-alt);
+  margin-right: var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
+  padding-right: var(--space-5);
+}
+
 .message-item:hover {
   background: var(--color-bg-alt);
   margin-left: var(--space-2);
@@ -1399,6 +1719,13 @@ const formatTime = (date) => {
 
 .message-content {
   flex: 1;
+  max-width: 70%;
+}
+
+.message-content.own-message-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
 }
 
 .message-header {
@@ -1406,6 +1733,22 @@ const formatTime = (date) => {
   gap: var(--space-3);
   margin-bottom: var(--space-2);
   align-items: baseline;
+}
+
+.message-header.own-message-header {
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+}
+
+.message-time-wrapper {
+  display: flex;
+  gap: var(--space-1);
+  align-items: baseline;
+}
+
+.own-message-label {
+  color: var(--bauhaus-blue);
+  font-weight: 700;
 }
 
 .message-author {
@@ -1423,11 +1766,27 @@ const formatTime = (date) => {
 .message-text {
   line-height: 1.6;
   font-size: var(--text-base);
-  padding: var(--space-2) 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 2px solid var(--color-border);
+  background: var(--color-bg-alt);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.message-content.own-message-content .message-text {
+  background: var(--bauhaus-blue);
+  color: white;
+  border-color: var(--color-text);
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.15);
 }
 
 .message-files {
   margin-top: var(--space-2);
+}
+
+.message-content.own-message-content .message-files {
+  text-align: right;
 }
 
 .file-item {
@@ -1605,6 +1964,10 @@ const formatTime = (date) => {
   border-top: 1px solid var(--color-border);
 }
 
+.message-content.own-message-content .message-actions {
+  justify-content: flex-end;
+}
+
 .message-action-btn {
   background: transparent;
   border: 1px solid var(--color-border);
@@ -1630,6 +1993,10 @@ const formatTime = (date) => {
   margin-top: var(--space-2);
   padding-top: var(--space-2);
   border-top: 1px solid var(--color-border);
+}
+
+.message-content.own-message-content .message-reactions {
+  justify-content: flex-end;
 }
 
 .reaction-button {

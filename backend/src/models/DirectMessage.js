@@ -18,7 +18,7 @@ const directMessageSchema = new mongoose.Schema({
   unreadCount: {
     type: Map,
     of: Number,
-    default: new Map()
+    default: () => new Map() // Function to avoid shared reference across documents
   },
   createdAt: {
     type: Date,

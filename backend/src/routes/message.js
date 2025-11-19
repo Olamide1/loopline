@@ -101,10 +101,56 @@ router.post('/', async (req, res) => {
     await message.populate('mentions', 'name email avatar status')
     await message.populate('readBy.user', 'name email avatar status')
     
+    // Broadcast message via Socket.IO for real-time updates
+    const io = req.app.get('io')
+    if (io) {
+      const messageObj = message.toObject ? message.toObject() : message
+      const channelIdStr = channel.toString()
+      
+      // Ensure channel ID is a string in the message object
+      messageObj.channel = channelIdStr
+      
+      if (threadParent) {
+        // Thread reply - emit to thread listeners
+        io.to(`thread:${threadParent}`).emit('thread_reply_created', messageObj)
+        // Also emit to channel for thread count updates
+        io.to(`channel:${channelIdStr}`).emit('thread_reply_created', messageObj)
+      } else {
+        // Regular message - broadcast to channel
+        io.to(`channel:${channelIdStr}`).emit('message_created', messageObj)
+      }
+      
+      // Also broadcast to workspace for activity updates and sidebar unread counts
+      const workspaceId = channelDoc.workspace?.toString() || channelDoc.workspace
+      if (workspaceId) {
+        // Emit message_created to workspace for sidebar updates (MUST include channel as string)
+        const workspaceMessage = {
+          ...messageObj,
+          channel: channelIdStr,
+          workspaceId: workspaceId
+        }
+        io.to(`workspace:${workspaceId}`).emit('message_created', workspaceMessage)
+        
+        // Also emit workspace activity
+        io.to(`workspace:${workspaceId}`).emit('workspace_activity', {
+          type: 'message',
+          channel: channelIdStr,
+          message: messageObj
+        })
+      }
+    }
+    
+    // Create notifications
+    const { createThreadNotification, createMentionNotification } = await import('./notification.js')
+    
     // Create notification if this is a thread reply
     if (threadParent) {
-      const { createThreadNotification } = await import('./notification.js')
-      await createThreadNotification(message, threadParent)
+      await createThreadNotification(message, threadParent, io)
+    }
+    
+    // Create mention notifications for regular messages (not thread replies)
+    if (!threadParent && mentions && mentions.length > 0) {
+      await createMentionNotification(message, channelDoc, workspace, io)
     }
     
     res.status(201).json(message)

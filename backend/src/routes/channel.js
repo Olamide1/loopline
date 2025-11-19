@@ -61,7 +61,14 @@ router.post('/', async (req, res) => {
     await channel.save()
     
     // Populate for response
-    await channel.populate('members', 'name email avatar')
+    await channel.populate('members', 'name email avatar status')
+    
+    // Broadcast channel creation via Socket.IO
+    const io = req.app.get('io')
+    if (io) {
+      const workspaceId = workspaceDoc._id.toString()
+      io.to(`workspace:${workspaceId}`).emit('channel_created', channel)
+    }
     
     console.log('✅ Channel created:', channel._id)
     res.status(201).json(channel)
@@ -100,7 +107,51 @@ router.get('/workspace/:workspaceId', async (req, res) => {
         { privacy: 'public' },
         { members: req.user._id }
       ]
-    }).populate('members', 'name email avatar')
+    }).populate('members', 'name email avatar status')
+      .lean()
+    
+    // Calculate unread counts for each channel
+    const Message = (await import('../models/Message.js')).default
+    const userId = req.user._id.toString()
+    
+    for (const channel of channels) {
+      // When using .lean(), Map fields become plain objects
+      let lastRead = null
+      try {
+        if (channel.lastRead && typeof channel.lastRead === 'object' && !Array.isArray(channel.lastRead)) {
+          lastRead = channel.lastRead[userId] || null
+        }
+      } catch (err) {
+        // If lastRead access fails, just continue with null
+        console.warn('Warning: Could not access lastRead for channel', channel._id, err.message)
+      }
+      
+      const query = {
+        channel: channel._id,
+        deleted: false,
+        threadParent: null // Only count parent messages, not thread replies
+      }
+      
+      if (lastRead) {
+        try {
+          const lastReadDate = new Date(lastRead)
+          if (!isNaN(lastReadDate.getTime())) {
+            query.createdAt = { $gt: lastReadDate }
+          }
+        } catch (err) {
+          // Invalid date, skip the filter
+          console.warn('Warning: Invalid lastRead date for channel', channel._id, err.message)
+        }
+      }
+      
+      try {
+        const unreadCount = await Message.countDocuments(query)
+        channel.unreadCount = unreadCount || 0
+      } catch (err) {
+        console.error('Error counting unread messages for channel', channel._id, err.message)
+        channel.unreadCount = 0
+      }
+    }
     
     res.json(channels)
   } catch (error) {
@@ -155,8 +206,53 @@ router.patch('/:id', async (req, res) => {
       return res.status(403).json({ message: 'Access denied' })
     }
     
-    Object.assign(channel, req.body)
+    // Handle members array separately to ensure proper updates
+    if (req.body.members !== undefined) {
+      // Validate that all members are workspace members
+      const workspaceMembers = []
+      if (workspace.admin) {
+        workspaceMembers.push(workspace.admin._id || workspace.admin)
+      }
+      if (workspace.members) {
+        workspace.members.forEach(m => {
+          const memberId = m.user?._id || m.user
+          if (memberId) {
+            workspaceMembers.push(memberId)
+          }
+        })
+      }
+      
+      // Filter to only include valid workspace members
+      const validMembers = req.body.members.filter(memberId => {
+        return workspaceMembers.some(wm => {
+          const wmId = wm?._id || wm
+          return wmId?.toString() === memberId?.toString()
+        })
+      })
+      
+      channel.members = validMembers
+    }
+    
+    // Update other fields
+    if (req.body.name !== undefined) channel.name = req.body.name
+    if (req.body.description !== undefined) channel.description = req.body.description
+    if (req.body.privacy !== undefined) channel.privacy = req.body.privacy
+    
     await channel.save()
+    await channel.populate('members', 'name email avatar status')
+    
+    // Broadcast channel update via Socket.IO
+    const io = req.app.get('io')
+    if (io) {
+      const workspaceId = channel.workspace.toString()
+      io.to(`workspace:${workspaceId}`).emit('channel_updated', {
+        _id: channel._id,
+        name: channel.name,
+        privacy: channel.privacy,
+        members: channel.members,
+        description: channel.description
+      })
+    }
     
     res.json(channel)
   } catch (error) {
@@ -189,6 +285,52 @@ router.post('/:id/archive', async (req, res) => {
     res.json(channel)
   } catch (error) {
     res.status(500).json({ message: 'Failed to archive channel', error: error.message })
+  }
+})
+
+// Mark channel as read
+router.post('/:id/read', authenticate, async (req, res) => {
+  try {
+    const channel = await Channel.findById(req.params.id)
+    if (!channel) {
+      return res.status(404).json({ message: 'Channel not found' })
+    }
+    
+    const workspace = await Workspace.findById(channel.workspace)
+    if (!workspace) {
+      return res.status(404).json({ message: 'Workspace not found' })
+    }
+    
+    if (!isWorkspaceMember(workspace, req.user._id)) {
+      return res.status(403).json({ message: 'Access denied' })
+    }
+    
+    // Update last read timestamp
+    const userIdStr = req.user._id.toString()
+    const now = new Date()
+    
+    // Use findByIdAndUpdate with $set for Map fields (Mongoose handles this correctly)
+    await Channel.findByIdAndUpdate(
+      req.params.id,
+      { $set: { [`lastRead.${userIdStr}`]: now } },
+      { new: true }
+    )
+    
+    // Broadcast channel read event to workspace
+    const io = req.app.get('io')
+    if (io) {
+      const workspaceId = workspace._id?.toString() || workspace._id
+      if (workspaceId) {
+        io.to(`workspace:${workspaceId}`).emit('channel_read', {
+          channelId: req.params.id.toString(),
+          userId: userIdStr
+        })
+      }
+    }
+    
+    res.json({ message: 'Channel marked as read', lastRead: now })
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to mark channel as read', error: error.message })
   }
 })
 

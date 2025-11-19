@@ -87,43 +87,214 @@ router.patch('/read/all', async (req, res) => {
   }
 })
 
+// Helper function to normalize user ID to string
+const normalizeUserId = (user) => {
+  if (!user) return null
+  if (typeof user === 'string') return user
+  if (user._id) return user._id.toString()
+  if (user.toString) return user.toString()
+  return String(user)
+}
+
 // Helper function to create thread reply notification
-export const createThreadNotification = async (replyMessage, parentMessage) => {
+export const createThreadNotification = async (replyMessage, parentMessage, io = null) => {
   try {
     // Get parent message to find original author
     const parent = await Message.findById(parentMessage)
       .populate('channel')
       .populate('user')
     
-    if (!parent) return
+    if (!parent || !parent.user) {
+      console.error('❌ Parent message or user not found for thread notification')
+      return
+    }
+    
+    // Normalize user IDs to strings for consistent comparison
+    const parentUserId = normalizeUserId(parent.user)
+    const replyUserId = normalizeUserId(replyMessage.user)
+    
+    if (!parentUserId || !replyUserId) {
+      console.error('❌ Could not normalize user IDs for thread notification')
+      return
+    }
+    
+    // Skip if reply author is the same as parent author
+    if (parentUserId === replyUserId) {
+      console.log('⏭️ Skipping notification - reply author is same as parent author')
+      return
+    }
     
     // Get workspace
-    const channel = await Channel.findById(parent.channel)
-    if (!channel) return
+    const channelId = normalizeUserId(parent.channel)
+    if (!channelId) {
+      console.error('❌ Could not get channel ID for thread notification')
+      return
+    }
     
-    const workspace = await Workspace.findById(channel.workspace)
-    if (!workspace) return
+    const channel = await Channel.findById(channelId)
+    if (!channel) {
+      console.error('❌ Channel not found for thread notification')
+      return
+    }
+    
+    const workspaceId = normalizeUserId(channel.workspace)
+    if (!workspaceId) {
+      console.error('❌ Workspace ID not found for thread notification')
+      return
+    }
+    
+    const workspace = await Workspace.findById(workspaceId)
+    if (!workspace) {
+      console.error('❌ Workspace not found for thread notification')
+      return
+    }
     
     // Create notification for parent message author (if not the reply author)
-    if (parent.user._id.toString() !== replyMessage.user.toString()) {
+    // Check if notification already exists
+    const existing = await Notification.findOne({
+      user: parentUserId,
+      type: 'thread_reply',
+      threadParent: parentMessage,
+      message: replyMessage._id,
+      read: false
+    })
+    
+    if (!existing) {
+      const notification = new Notification({
+        user: parentUserId,
+        type: 'thread_reply',
+        workspace: workspaceId,
+        channel: channelId,
+        message: replyMessage._id,
+        threadParent: parentMessage,
+        fromUser: replyUserId
+      })
+      
+      await notification.save()
+      await notification.populate('fromUser', 'name email avatar')
+      await notification.populate('channel', 'name')
+      await notification.populate('workspace', 'name')
+      
+      // Broadcast via Socket.IO - use normalized user ID
+      if (io) {
+        const notificationObj = notification.toObject ? notification.toObject() : notification
+        // Ensure user ID is string for Socket.IO room
+        const targetUserId = normalizeUserId(parentUserId)
+        io.to(`user:${targetUserId}`).emit('notification', notificationObj)
+        
+        // Also emit notification count update
+        const count = await Notification.countDocuments({
+          user: parentUserId,
+          read: false
+        })
+        io.to(`user:${targetUserId}`).emit('notification_count_updated', { count })
+        console.log(`✅ Thread notification sent to user:${targetUserId}`)
+      }
+    }
+    
+    // Also notify users mentioned in the thread reply
+    if (replyMessage.mentions && replyMessage.mentions.length > 0) {
+      for (const mentionedUserIdRaw of replyMessage.mentions) {
+        const mentionedUserId = normalizeUserId(mentionedUserIdRaw)
+        
+        // Skip if mentioned user is the reply author or parent author
+        if (!mentionedUserId || mentionedUserId === replyUserId || mentionedUserId === parentUserId) {
+          continue
+        }
+        
+        // Check if notification already exists
+        const existingMention = await Notification.findOne({
+          user: mentionedUserId,
+          type: 'thread_reply',
+          threadParent: parentMessage,
+          message: replyMessage._id,
+          read: false
+        })
+        
+        if (!existingMention) {
+          const mentionNotification = new Notification({
+            user: mentionedUserId,
+            type: 'thread_reply',
+            workspace: workspaceId,
+            channel: channelId,
+            message: replyMessage._id,
+            threadParent: parentMessage,
+            fromUser: replyUserId
+          })
+          
+          await mentionNotification.save()
+          await mentionNotification.populate('fromUser', 'name email avatar')
+          await mentionNotification.populate('channel', 'name')
+          await mentionNotification.populate('workspace', 'name')
+          
+          if (io) {
+            const notificationObj = mentionNotification.toObject ? mentionNotification.toObject() : mentionNotification
+            const targetUserId = normalizeUserId(mentionedUserId)
+            io.to(`user:${targetUserId}`).emit('notification', notificationObj)
+            
+            // Also emit notification count update
+            const count = await Notification.countDocuments({
+              user: mentionedUserId,
+              read: false
+            })
+            io.to(`user:${targetUserId}`).emit('notification_count_updated', { count })
+            console.log(`✅ Thread mention notification sent to user:${targetUserId}`)
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('❌ Failed to create thread notification:', error)
+  }
+}
+
+// Helper function to create mention notification for regular messages
+export const createMentionNotification = async (message, channel, workspace, io = null) => {
+  try {
+    if (!message || !message.mentions || message.mentions.length === 0) {
+      return
+    }
+    
+    // Normalize message author ID
+    const messageUserId = normalizeUserId(message.user)
+    if (!messageUserId) {
+      console.error('❌ Could not normalize message author ID for mention notification')
+      return
+    }
+    
+    const workspaceId = normalizeUserId(workspace?._id || workspace)
+    const channelId = normalizeUserId(channel?._id || channel)
+    
+    if (!workspaceId || !channelId) {
+      console.error('❌ Missing workspace or channel ID for mention notification')
+      return
+    }
+    
+    // Create notifications for each mentioned user
+    for (const mentionedUserIdRaw of message.mentions) {
+      const mentionedUserId = normalizeUserId(mentionedUserIdRaw)
+      
+      // Skip if mentioned user is the message author
+      if (!mentionedUserId || mentionedUserId === messageUserId) {
+        continue
+      }
+      
       // Check if notification already exists
       const existing = await Notification.findOne({
-        user: parent.user._id,
-        type: 'thread_reply',
-        threadParent: parentMessage,
-        message: replyMessage._id,
+        user: mentionedUserId,
+        type: 'mention',
+        message: message._id,
         read: false
       })
       
       if (!existing) {
         const notification = new Notification({
-          user: parent.user._id,
-          type: 'thread_reply',
-          workspace: workspace._id,
-          channel: channel._id,
-          message: replyMessage._id,
-          threadParent: parentMessage,
-          fromUser: replyMessage.user
+          user: mentionedUserId,
+          type: 'mention',
+          workspace: workspaceId,
+          channel: channelId,
+          message: message._id,
+          fromUser: messageUserId
         })
         
         await notification.save()
@@ -132,53 +303,23 @@ export const createThreadNotification = async (replyMessage, parentMessage) => {
         await notification.populate('workspace', 'name')
         
         // Broadcast via Socket.IO
-        const io = global.io
         if (io) {
-          io.to(`user:${parent.user._id}`).emit('notification', notification.toObject ? notification.toObject() : notification)
-        }
-      }
-    }
-    
-    // Also notify users mentioned in the thread
-    if (replyMessage.mentions && replyMessage.mentions.length > 0) {
-      for (const mentionedUserId of replyMessage.mentions) {
-        if (mentionedUserId.toString() !== replyMessage.user.toString() &&
-            mentionedUserId.toString() !== parent.user._id.toString()) {
+          const notificationObj = notification.toObject ? notification.toObject() : notification
+          const targetUserId = normalizeUserId(mentionedUserId)
+          io.to(`user:${targetUserId}`).emit('notification', notificationObj)
           
-          const existing = await Notification.findOne({
+          // Also emit notification count update
+          const count = await Notification.countDocuments({
             user: mentionedUserId,
-            type: 'thread_reply',
-            threadParent: parentMessage,
-            message: replyMessage._id,
             read: false
           })
-          
-          if (!existing) {
-            const notification = new Notification({
-              user: mentionedUserId,
-              type: 'thread_reply',
-              workspace: workspace._id,
-              channel: channel._id,
-              message: replyMessage._id,
-              threadParent: parentMessage,
-              fromUser: replyMessage.user
-            })
-            
-            await notification.save()
-            await notification.populate('fromUser', 'name email avatar')
-            await notification.populate('channel', 'name')
-            await notification.populate('workspace', 'name')
-            
-            const io = global.io
-            if (io) {
-              io.to(`user:${mentionedUserId}`).emit('notification', notification.toObject ? notification.toObject() : notification)
-            }
-          }
+          io.to(`user:${targetUserId}`).emit('notification_count_updated', { count })
+          console.log(`✅ Mention notification sent to user:${targetUserId}`)
         }
       }
     }
   } catch (error) {
-    console.error('Failed to create thread notification:', error)
+    console.error('❌ Failed to create mention notification:', error)
   }
 }
 

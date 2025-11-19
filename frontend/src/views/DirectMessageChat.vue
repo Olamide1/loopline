@@ -189,14 +189,37 @@ const setupSocket = () => {
   
   socket.value.on('connect', () => {
     console.log('🔌 DM Socket connected')
+    // Ensure we're in the user room (already joined on connection, but verify)
+    const userId = authStore.user?.id || authStore.user?._id
+    if (userId) {
+      socket.value.emit('join_workspace', workspaceId) // Join workspace for presence
+    }
   })
   
   socket.value.on('dm_message', (data) => {
-    if (data.conversation._id === conversationId) {
+    console.log('💬 DM message received in chat view:', data)
+    
+    // Normalize conversation ID comparison
+    const dataConvId = data.conversation?._id?.toString() || data.conversation?._id || data.conversation
+    const currentConvId = conversationId?.toString() || conversationId
+    
+    if (dataConvId === currentConvId) {
       if (!messages.value.find(m => m._id === data.message._id)) {
-        messages.value.push(data.message)
+        // Ensure message has all required fields
+        const newMessage = {
+          ...data.message,
+          sender: data.message.sender || data.message.user,
+          read: data.message.read || false,
+          createdAt: data.message.createdAt || new Date()
+        }
+        messages.value.push(newMessage)
+        console.log('✅ Added DM message to chat view:', newMessage._id)
         scrollToBottom()
+      } else {
+        console.log('⚠️ DM message already exists, skipping')
       }
+    } else {
+      console.log('⚠️ DM message is for different conversation:', dataConvId, 'current:', currentConvId)
     }
   })
 }

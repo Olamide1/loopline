@@ -113,8 +113,13 @@ export const useAuthStore = defineStore('auth', () => {
   }
   
   // Initialize auth if token exists (only on store creation, not on every access)
-  if (token.value && !user.value) {
-    fetchUser()
+  // Use a flag to prevent multiple simultaneous fetches
+  let isFetching = false
+  if (token.value && !user.value && !isFetching) {
+    isFetching = true
+    fetchUser().finally(() => {
+      isFetching = false
+    })
   }
   
   return {

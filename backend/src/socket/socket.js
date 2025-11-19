@@ -1,24 +1,58 @@
 import Message from '../models/Message.js'
 import Channel from '../models/Channel.js'
 import User from '../models/User.js'
+import jwt from 'jsonwebtoken'
 
 // Track online users per workspace
 const onlineUsers = new Map() // workspaceId -> Set of userIds
 
 export const setupSocketIO = (io) => {
   io.use(async (socket, next) => {
-    // Authentication middleware for Socket.IO
-    // In production, verify JWT token from handshake.auth.token
-    const token = socket.handshake.auth.token
-    
-    if (!token) {
-      return next(new Error('Authentication error'))
+    try {
+      // Authentication middleware for Socket.IO
+      // Verify JWT token from handshake.auth.token
+      const token = socket.handshake.auth.token
+      
+      if (!token) {
+        return next(new Error('Authentication error: No token provided'))
+      }
+      
+      // Verify JWT token
+      let decoded
+      try {
+        decoded = jwt.verify(token, process.env.JWT_SECRET)
+      } catch (error) {
+        if (error.name === 'JsonWebTokenError') {
+          return next(new Error('Authentication error: Invalid token'))
+        }
+        if (error.name === 'TokenExpiredError') {
+          return next(new Error('Authentication error: Token expired'))
+        }
+        return next(new Error('Authentication error: Token verification failed'))
+      }
+      
+      // Get userId from decoded token (not from client - security!)
+      const userId = decoded.userId
+      
+      if (!userId) {
+        return next(new Error('Authentication error: Invalid token payload'))
+      }
+      
+      // Verify user exists in database
+      const user = await User.findById(userId).select('-password')
+      if (!user) {
+        return next(new Error('Authentication error: User not found'))
+      }
+      
+      // Attach verified user ID to socket
+      socket.userId = userId
+      socket.user = user
+      
+      next()
+    } catch (error) {
+      console.error('Socket.IO authentication error:', error)
+      return next(new Error('Authentication error: ' + (error.message || 'Unknown error')))
     }
-    
-    // Verify token and attach user to socket
-    // This is simplified - implement proper JWT verification
-    socket.userId = socket.handshake.auth.userId
-    next()
   })
   
   io.on('connection', async (socket) => {
@@ -129,17 +163,33 @@ export const setupSocketIO = (io) => {
         })
         
         await message.save()
-        await message.populate('user', 'name email avatar')
-        await message.populate('mentions', 'name email avatar')
-        await message.populate('reactions.users', 'name email avatar')
+        await message.populate('user', 'name email avatar status')
+        await message.populate('mentions', 'name email avatar status')
+        await message.populate('reactions.users', 'name email avatar status')
+        await message.populate('readBy.user', 'name email avatar status')
+        
+        // Get message as plain object for Socket.IO
+        const messageObj = message.toObject ? message.toObject() : message
         
         // Broadcast to channel
         if (threadParent) {
           // Thread reply - emit to thread listeners
-          io.to(`thread:${threadParent}`).emit('thread_reply_created', message)
+          io.to(`thread:${threadParent}`).emit('thread_reply_created', messageObj)
+          // Also emit to channel for thread count updates
+          io.to(`channel:${channel}`).emit('thread_reply_created', messageObj)
         } else {
-          // Regular message
-          io.to(`channel:${channel}`).emit('message_created', message)
+          // Regular message - broadcast to channel
+          io.to(`channel:${channel}`).emit('message_created', messageObj)
+        }
+        
+        // Also broadcast to workspace for activity updates
+        const workspaceId = channelDoc.workspace?.toString() || channelDoc.workspace
+        if (workspaceId) {
+          io.to(`workspace:${workspaceId}`).emit('workspace_activity', {
+            type: 'message',
+            channel: channel,
+            message: messageObj
+          })
         }
       } catch (error) {
         socket.emit('error', { message: 'Failed to create message', error: error.message })

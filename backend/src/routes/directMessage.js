@@ -185,11 +185,76 @@ router.post('/conversation/:conversationId/message', async (req, res) => {
     // Broadcast via Socket.IO
     const io = req.app.get('io')
     if (io) {
+      const conversationObj = conversation.toObject ? conversation.toObject() : conversation
+      const messageObj = message.toObject ? message.toObject() : message
+      
+      // Find workspaces where both participants are members (for sidebar updates)
+      const participantIds = conversation.participants.map(p => {
+        const pid = p._id || p
+        return pid.toString()
+      })
+      
+      // Find workspaces where both participants are members
+      let sharedWorkspaces = []
+      try {
+        const Workspace = (await import('../models/Workspace.js')).default
+        const allWorkspaces = await Workspace.find({
+          $or: [
+            { admin: { $in: participantIds } },
+            { 'members.user': { $in: participantIds } }
+          ]
+        }).select('_id admin members').lean()
+        
+        // Filter to only workspaces where BOTH participants are members
+        sharedWorkspaces = allWorkspaces.filter(workspace => {
+          const workspaceUserIds = new Set()
+          
+          // Add admin
+          if (workspace.admin) {
+            workspaceUserIds.add(workspace.admin.toString())
+          }
+          
+          // Add members
+          if (workspace.members && Array.isArray(workspace.members)) {
+            workspace.members.forEach(member => {
+              const memberId = member.user?._id || member.user || member
+              if (memberId) {
+                workspaceUserIds.add(memberId.toString())
+              }
+            })
+          }
+          
+          // Check if both participants are in this workspace
+          return participantIds.every(pid => workspaceUserIds.has(pid))
+        }).map(ws => ws._id.toString())
+      } catch (error) {
+        console.error('Failed to find shared workspaces for DM update:', error)
+        // Continue without workspace-specific updates
+      }
+      
       // Emit to both participants
       conversation.participants.forEach(participant => {
-        io.to(`user:${participant._id}`).emit('dm_message', {
-          conversation: conversation.toObject(),
-          message: message.toObject()
+        const participantId = participant._id?.toString() || participant.toString()
+        
+        // Emit to user's personal room
+        io.to(`user:${participantId}`).emit('dm_message', {
+          conversation: conversationObj,
+          message: messageObj
+        })
+        
+        // Emit dm_unread_update to user's personal room
+        io.to(`user:${participantId}`).emit('dm_unread_update', {
+          conversationId: conversation._id.toString(),
+          unreadCount: conversationObj.unreadCount
+        })
+        
+        // Also emit to shared workspace rooms for sidebar updates
+        sharedWorkspaces.forEach(workspaceId => {
+          io.to(`workspace:${workspaceId}`).emit('dm_unread_update', {
+            conversationId: conversation._id.toString(),
+            unreadCount: conversationObj.unreadCount,
+            participantId: participantId
+          })
         })
       })
     }

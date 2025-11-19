@@ -32,6 +32,11 @@ const channelSchema = new mongoose.Schema({
     type: Number,
     default: null // null = use workspace default
   },
+  lastRead: {
+    type: Map,
+    of: Date,
+    default: () => new Map() // userId -> last read timestamp (function to avoid shared reference)
+  },
   createdAt: {
     type: Date,
     default: Date.now
