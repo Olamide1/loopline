@@ -301,6 +301,44 @@
           <h3>Search Messages</h3>
           <button @click="showSearch = false" class="btn-close">×</button>
         </div>
+        <div class="search-filters-container">
+          <div class="search-filter-group">
+            <label for="filter-user">From:</label>
+            <select
+              id="filter-user"
+              v-model="searchFilterUser"
+              @change="performSearch"
+              class="select-filter"
+            >
+              <option :value="null">All Users</option>
+              <option
+                v-for="member in workspaceMembers"
+                :key="member._id || member.id"
+                :value="member._id || member.id"
+              >
+                {{ member.name || member.email || 'Unknown' }}
+              </option>
+            </select>
+          </div>
+          <div class="search-filter-group">
+            <label for="filter-channel">In:</label>
+            <select
+              id="filter-channel"
+              v-model="searchFilterChannel"
+              @change="performSearch"
+              class="select-filter"
+            >
+              <option :value="null">All Channels</option>
+              <option
+                v-for="ch in availableChannels"
+                :key="ch._id || ch.id"
+                :value="ch._id || ch.id"
+              >
+                # {{ ch.name }}
+              </option>
+            </select>
+          </div>
+        </div>
         <div class="search-input-container">
           <input
             v-model="searchQuery"
@@ -372,6 +410,9 @@ const showSearch = ref(false)
 const searchQuery = ref('')
 const searchResults = ref([])
 const searching = ref(false)
+const searchFilterUser = ref(null)
+const searchFilterChannel = ref(null)
+const availableChannels = ref([])
 
 // Notifications
 const threadUnreadCounts = ref({}) // Map of messageId -> count
@@ -432,6 +473,21 @@ onMounted(async () => {
 watch(channelId, async (newId, oldId) => {
   if (newId && newId !== oldId) {
     await loadChannelData()
+  }
+})
+
+// Watch for search modal opening to fetch channels and reset filters
+watch(showSearch, async (isOpen) => {
+  if (isOpen && workspace.value) {
+    await fetchChannelsForSearch()
+    // Focus search input when modal opens
+    nextTick(() => searchInput.value?.focus())
+  } else if (!isOpen) {
+    // Reset search filters when modal closes
+    searchFilterUser.value = null
+    searchFilterChannel.value = null
+    searchQuery.value = ''
+    searchResults.value = []
   }
 })
 
@@ -1386,6 +1442,28 @@ const handleStopTyping = () => {
   }
 }
 
+// Fetch channels for search filter
+const fetchChannelsForSearch = async () => {
+  if (!workspace.value?._id && !workspace.value?.id) return
+  
+  try {
+    const apiUrl = import.meta.env.VITE_API_URL || ''
+    const token = authStore.token || localStorage.getItem('token')
+    const workspaceId = workspace.value?._id || workspace.value?.id
+    
+    const response = await axios.get(`${apiUrl}/api/channels/workspace/${workspaceId}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    availableChannels.value = Array.isArray(response.data) ? response.data : []
+  } catch (error) {
+    console.error('❌ Failed to fetch channels for search:', error)
+    availableChannels.value = []
+  }
+}
+
 // Search functions
 const performSearch = async () => {
   if (!searchQuery.value.trim() || searchQuery.value.length < 2) {
@@ -1398,11 +1476,22 @@ const performSearch = async () => {
     const apiUrl = import.meta.env.VITE_API_URL || ''
     const token = authStore.token || localStorage.getItem('token')
     
+    const params = {
+      q: searchQuery.value,
+      workspaceId: workspace.value?._id || workspace.value?.id
+    }
+    
+    // Add filters if selected
+    if (searchFilterUser.value) {
+      params.userId = searchFilterUser.value
+    }
+    
+    if (searchFilterChannel.value) {
+      params.channelId = searchFilterChannel.value
+    }
+    
     const response = await axios.get(`${apiUrl}/api/search`, {
-      params: {
-        q: searchQuery.value,
-        workspaceId: workspace.value?._id || workspace.value?.id
-      },
+      params,
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -2611,6 +2700,48 @@ const formatTime = (date) => {
 }
 
 .btn-close:hover {
+  background: var(--color-bg-alt);
+}
+
+.search-filters-container {
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  gap: var(--space-3);
+}
+
+.search-filter-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.search-filter-group label {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-muted);
+}
+
+.select-filter {
+  width: 100%;
+  font-size: var(--text-sm);
+  padding: var(--space-2) var(--space-3);
+  border: 2px solid var(--color-text);
+  border-radius: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.select-filter:focus {
+  outline: none;
+  border-color: var(--bauhaus-blue);
+  box-shadow: 3px 3px 0 var(--bauhaus-blue);
   background: var(--color-bg-alt);
 }
 
