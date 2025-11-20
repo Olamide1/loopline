@@ -162,12 +162,15 @@ router.post('/', async (req, res) => {
     // This ensures message creation is fast and notifications don't delay the response
     setImmediate(async () => {
       try {
+        console.log('🔔 Starting notification creation process for message:', message._id?.toString() || message._id)
         const { createThreadNotification, createMentionNotification, createChannelMessageNotification } = await import('./notification.js')
         
         // CRITICAL: Normalize sender ID to string for consistent comparison
         // message.user might be ObjectId or populated object, normalize it
         const senderId = message.user?._id?.toString() || message.user?.toString() || req.user._id.toString()
         const normalizedSenderId = String(senderId).trim()
+        
+        console.log('🔍 Normalized sender ID for notifications:', normalizedSenderId)
         
         // Ensure message.user is set to normalized ID for notification functions
         if (!message.user || typeof message.user !== 'string') {
@@ -176,11 +179,13 @@ router.post('/', async (req, res) => {
         
         // Create notification if this is a thread reply
         if (threadParent) {
+          console.log('📝 Creating thread notification...')
           await createThreadNotification(message, threadParent, io)
         } else {
           // For regular messages (not thread replies)
           if (mentions && mentions.length > 0) {
             // Create mention notifications for mentioned users
+            console.log('📝 Creating mention notifications for', mentions.length, 'mentioned users...')
             await createMentionNotification(message, channelDoc, workspace, io)
           } else {
             // CRITICAL: Populate workspace and channel before creating notifications
@@ -227,7 +232,9 @@ router.post('/', async (req, res) => {
             
             // Create notifications for all channel members (regular channel message)
             // Pass normalized sender ID to ensure proper exclusion
+            console.log('📝 Creating channel message notifications...')
             await createChannelMessageNotification(message, populatedChannel, populatedWorkspace, io, normalizedSenderId)
+            console.log('✅ Channel message notifications creation completed')
           }
         }
       } catch (notificationError) {

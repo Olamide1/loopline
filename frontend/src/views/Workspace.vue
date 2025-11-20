@@ -622,192 +622,91 @@ const workspaceId = route.params.workspaceId
 // Use workspace auth composable
 const { isWorkspaceAdmin, hasAdminRole } = useWorkspaceAuth(workspace)
 
-// Notification sound functionality - improved and more reliable
-let audioContext = null
-let audioReady = false
-let audioInitAttempted = false
+// Notification sound functionality - simple and cross-browser compatible
+// Use shared global audio context so all components can use it
+// Use Web Audio API with automatic resume - works in all modern browsers
 
-// Initialize notification sound (ONLY after user interaction - required by browsers)
-const initNotificationSound = async () => {
-  // If already initialized and ready, return it
-  if (audioContext && audioReady && audioContext.state === 'running') {
-    return audioContext
-  }
-  
-  // Mark that we've attempted initialization
-  audioInitAttempted = true
-  
+// Play notification sound - simple beep that works everywhere
+const playNotificationSound = () => {
   try {
-    // Create audio context ONLY if it doesn't exist (must be called after user interaction)
-    if (!audioContext) {
-      console.log('🔊 Creating AudioContext...')
-      audioContext = new (window.AudioContext || window.webkitAudioContext)()
-      console.log('🔊 AudioContext created, initial state:', audioContext.state)
-    }
-    
-    // Ensure audio context is running (browsers suspend it by default)
-    // This resume() call MUST happen in response to a user gesture
-    if (audioContext.state === 'suspended') {
-      console.log('🔄 Resuming suspended AudioContext...')
+    // Use shared global audio context (accessible from all components)
+    if (!window.notificationAudioContext) {
       try {
-        await audioContext.resume()
-        console.log('✅ AudioContext resumed, state:', audioContext.state)
-      } catch (resumeError) {
-        console.warn('⚠️ Failed to resume AudioContext (may require user gesture):', resumeError)
-        // Don't throw - we'll try again on next user interaction
-        audioReady = false
-        return null
-      }
-    }
-    
-    // Verify it's running
-    if (audioContext.state === 'running') {
-      audioReady = true
-      console.log('✅ Audio context initialized and ready:', audioContext.state)
-      return audioContext
-    } else {
-      console.warn('⚠️ AudioContext is not running:', audioContext.state)
-      audioReady = false
-      return null
-    }
-  } catch (e) {
-    console.error('❌ Audio context initialization failed:', e)
-    // Reset state so we can try again
-    if (audioContext && audioContext.state === 'closed') {
-      audioContext = null
-    }
-    audioReady = false
-    return null
-  }
-}
-
-// Play notification sound - creates a pleasant beep with proper async handling
-const playNotificationSound = async () => {
-  try {
-    // Try to initialize/resume audio context if needed
-    let ctx = audioContext
-    
-    // If no context or not ready, try to initialize (might work if user has interacted)
-    if (!ctx || !audioReady || ctx.state !== 'running') {
-      console.log('🔄 Attempting to initialize/resume audio context...')
-      ctx = await initNotificationSound()
-      
-      if (!ctx || ctx.state !== 'running') {
-        // If we haven't attempted initialization yet, log a message
-        if (!audioInitAttempted) {
-          console.log('🔇 Audio not initialized yet - waiting for user interaction...')
-          console.log('💡 Tip: Click anywhere on the page to enable notification sounds')
-        } else {
-          console.warn('⚠️ Audio context not available or not running:', ctx?.state || 'not initialized')
-          console.log('💡 User interaction required to enable audio')
-        }
-        return false // Can't play sound without user interaction
-      }
-    }
-    
-    // Verify state before playing
-    if (ctx.state === 'suspended') {
-      console.log('🔄 Audio context suspended, attempting to resume...')
-      try {
-        // This might fail if not in response to user gesture
-        await ctx.resume()
-        if (ctx.state !== 'running') {
-          console.warn('⚠️ Could not resume AudioContext - user interaction required')
-          audioReady = false
-          return false
-        }
-      } catch (resumeError) {
-        console.warn('⚠️ Failed to resume AudioContext:', resumeError)
-        audioReady = false
+        window.notificationAudioContext = new (window.AudioContext || window.webkitAudioContext)()
+        console.log('🔊 Created new audio context')
+      } catch (e) {
+        console.error('❌ Failed to create audio context:', e)
         return false
       }
     }
     
-    // Final check before playing
-    if (!ctx || ctx.state !== 'running') {
-      console.warn('⚠️ Audio context not in running state:', ctx?.state || 'null')
-      audioReady = false
-      return false
+    const ctx = window.notificationAudioContext
+    
+    // Function to actually play the sound
+    const playSoundNow = (audioCtx) => {
+      try {
+        // Create a simple beep
+        const oscillator = audioCtx.createOscillator()
+        const gainNode = audioCtx.createGain()
+        
+        oscillator.connect(gainNode)
+        gainNode.connect(audioCtx.destination)
+        
+        oscillator.frequency.value = 800
+        oscillator.type = 'sine'
+        
+        gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime)
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2)
+        
+        oscillator.start(audioCtx.currentTime)
+        oscillator.stop(audioCtx.currentTime + 0.2)
+        
+        console.log('🔔 Notification sound played successfully')
+      } catch (e) {
+        console.error('❌ Could not play sound:', e)
+      }
     }
     
-    // Update audioContext reference if we created/resumed it
-    audioContext = ctx
-    
-    // Create a pleasant notification beep (two-tone)
-    const now = ctx.currentTime
-    
-    // First beep - more noticeable
-    const osc1 = ctx.createOscillator()
-    const gain1 = ctx.createGain()
-    osc1.connect(gain1)
-    gain1.connect(ctx.destination)
-    
-    osc1.frequency.value = 800
-    osc1.type = 'sine'
-    gain1.gain.setValueAtTime(0, now)
-    gain1.gain.linearRampToValueAtTime(0.3, now + 0.02) // Louder
-    gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.2)
-    
-    osc1.start(now)
-    osc1.stop(now + 0.2)
-    
-    // Second beep (slightly higher pitch) - creates "ding-dong" effect
-    const osc2 = ctx.createOscillator()
-    const gain2 = ctx.createGain()
-    osc2.connect(gain2)
-    gain2.connect(ctx.destination)
-    
-    osc2.frequency.value = 1000
-    osc2.type = 'sine'
-    gain2.gain.setValueAtTime(0, now + 0.2)
-    gain2.gain.linearRampToValueAtTime(0.3, now + 0.22) // Louder
-    gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.4)
-    
-    osc2.start(now + 0.2)
-    osc2.stop(now + 0.4)
-    
-    console.log('🔔 Notification sound played successfully')
-    return true // Successfully played sound
-  } catch (e) {
-    console.error('❌ Could not play notification sound:', e)
-    // Reset audio state on error so it can be reinitialized
-    if (audioContext && audioContext.state === 'closed') {
-      audioContext = null
-      audioReady = false
-    }
-    return false // Failed to play sound
-  }
-}
-
-// Initialize audio on first user interaction (multiple events for reliability)
-const initAudioOnInteraction = async (event) => {
-  // Only initialize if not already ready
-  if (audioReady && audioContext && audioContext.state === 'running') {
-    return
-  }
-  
-  console.log('👆 User interaction detected, initializing audio...', event.type)
-  
-  try {
-    const ctx = await initNotificationSound()
-    if (ctx && ctx.state === 'running') {
-      console.log('✅ Audio successfully initialized after user interaction')
-      // Remove listeners after successful initialization to avoid unnecessary calls
-      // But keep them in case audio gets suspended later
+    // Resume if suspended (browsers suspend by default)
+    if (ctx.state === 'suspended') {
+      console.log('🔄 Audio context suspended, resuming...')
+      ctx.resume().then(() => {
+        console.log('✅ Audio context resumed, playing sound')
+        playSoundNow(ctx)
+      }).catch((err) => {
+        console.warn('⚠️ Failed to resume audio context, trying to play anyway:', err)
+        // Try playing anyway - might work
+        try {
+          playSoundNow(ctx)
+        } catch (e) {
+          console.error('❌ Could not play sound after resume failure:', e)
+        }
+      })
     } else {
-      console.warn('⚠️ Audio initialization attempted but not in running state')
+      // Context is running, play immediately
+      playSoundNow(ctx)
     }
-  } catch (error) {
-    console.error('❌ Failed to initialize audio on user interaction:', error)
+    
+    return true
+  } catch (e) {
+    console.error('❌ Could not initialize notification sound:', e)
+    return false
   }
 }
 
-// Listen for user interaction to initialize audio (required by browsers)
-// Use capture phase and multiple events for better reliability
-// Keep listeners active to handle suspended audio contexts
-const initAudioEvents = ['click', 'keydown', 'touchstart', 'mousedown', 'pointerdown']
-// Track if listeners are registered (to avoid duplicates)
-let audioListenersRegistered = false
+// Initialize audio on first user interaction
+const initAudioOnInteraction = () => {
+  if (window.notificationAudioContext) return
+  playNotificationSound() // This will create the context
+}
+
+// Register audio initialization on user interaction
+if (typeof window !== 'undefined') {
+  const initEvents = ['click', 'touchstart', 'keydown', 'pointerdown']
+  initEvents.forEach(eventType => {
+    document.addEventListener(eventType, initAudioOnInteraction, { once: true, passive: true })
+  })
+}
 
 // Debounce timers for API calls to prevent rate limiting
 const fetchNotificationsTimer = ref(null)
@@ -854,7 +753,14 @@ const setupSocket = () => {
     socket.value = null
   }
   
-  const apiUrl = import.meta.env.VITE_API_URL || ''
+  // CRITICAL: Default to localhost:3000 if VITE_API_URL is not set
+  // This prevents socket from trying to connect to empty string
+  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+  
+  if (!apiUrl) {
+    console.error('❌ No API URL configured for Socket.IO connection')
+    return
+  }
   
   // CRITICAL: Get token from multiple sources to ensure it's available
   const token = authStore.token || localStorage.getItem('token')
@@ -1081,12 +987,31 @@ const setupSocket = () => {
   
   // Listen for new notifications in real-time
   socket.value.on('notification', async (notification) => {
-    console.log('🔔 Notification received:', notification)
+    console.log('🔔🔔🔔 Notification received via socket:', {
+      notificationId: notification._id,
+      type: notification.type,
+      user: notification.user,
+      fromUser: notification.fromUser,
+      channel: notification.channel,
+      read: notification.read,
+      fullNotification: notification
+    })
     
     // Check if this notification is for the current user
     const userId = authStore.user?._id || authStore.user?.id
-    const userIdStr = userId?.toString()
-    const notificationTargetUserId = notification.user?._id?.toString() || notification.user?.toString() || notification.user
+    const userIdStr = userId ? String(userId).trim() : null
+    let notificationTargetUserId = null
+    
+    // Extract target user ID from notification
+    if (notification.user) {
+      if (typeof notification.user === 'string') {
+        notificationTargetUserId = notification.user.trim()
+      } else if (notification.user._id) {
+        notificationTargetUserId = String(notification.user._id).trim()
+      } else {
+        notificationTargetUserId = String(notification.user).trim()
+      }
+    }
     
     // Only process notifications that are FOR the current user (notification.user is the target/recipient)
     if (!userIdStr || !notificationTargetUserId) {
@@ -1094,50 +1019,64 @@ const setupSocket = () => {
       return
     }
     
-    if (userIdStr !== notificationTargetUserId) {
-      console.log('⏭️ Skipping notification - not for current user. Target:', notificationTargetUserId, 'Current:', userIdStr)
+    // Normalize both for comparison
+    const normalizedTargetUserId = String(notificationTargetUserId).trim()
+    const normalizedCurrentUserId = String(userIdStr).trim()
+    
+    if (normalizedTargetUserId !== normalizedCurrentUserId) {
+      console.log('⏭️ Skipping notification - not for current user. Target:', normalizedTargetUserId, 'Current:', normalizedCurrentUserId)
       return
     }
+    
+    console.log('✅ Notification is for current user, processing...')
     
     // CRITICAL: Check if notification is from the current user (don't notify about own actions)
     // IMPORTANT: notification.fromUser is the person who triggered the notification (e.g., reply author, message sender)
     // notification.user is the person who should receive it (e.g., parent message author, channel member)
-    const notificationFromUserId = notification.fromUser?._id?.toString() || notification.fromUser?.toString() || notification.fromUser
+    // Handle both populated object format {_id: "...", name: "..."} and string ID format
+    let notificationFromUserId = null
+    if (notification.fromUser) {
+      if (typeof notification.fromUser === 'string') {
+        notificationFromUserId = notification.fromUser
+      } else if (notification.fromUser._id) {
+        notificationFromUserId = notification.fromUser._id.toString()
+      } else if (notification.fromUser.toString) {
+        notificationFromUserId = notification.fromUser.toString()
+      } else {
+        notificationFromUserId = String(notification.fromUser)
+      }
+    }
     
-    // Normalize both IDs for comparison (ensure they're both strings)
-    const normalizedFromUserId = notificationFromUserId ? String(notificationFromUserId) : null
-    const normalizedCurrentUserId = userIdStr ? String(userIdStr) : null
+    // Normalize both IDs for comparison (ensure they're both trimmed strings)
+    // normalizedCurrentUserId is already declared above, reuse it
+    const normalizedFromUserId = notificationFromUserId ? String(notificationFromUserId).trim() : null
     
     // CRITICAL: If the notification is FROM the current user, skip it (they sent the message)
     if (normalizedFromUserId && normalizedCurrentUserId) {
-      // Compare as strings to ensure exact match
+      // Compare as trimmed strings to ensure exact match
       if (normalizedFromUserId === normalizedCurrentUserId) {
         console.log('⏭️ Skipping notification - from current user (own action).', {
           fromUser: normalizedFromUserId,
           currentUser: normalizedCurrentUserId,
           notificationType: notification.type,
-          notificationId: notification._id
-        })
-        return
-      }
-      
-      // Also check if they're the same when trimmed (in case of whitespace issues)
-      if (normalizedFromUserId.trim() === normalizedCurrentUserId.trim()) {
-        console.log('⏭️ Skipping notification - from current user (trimmed match).', {
-          fromUser: normalizedFromUserId,
-          currentUser: normalizedCurrentUserId
+          notificationId: notification._id,
+          fromUserRaw: notification.fromUser
         })
         return
       }
     }
     
-    console.log('✅ Processing notification - type:', notification.type, 'fromUser:', notificationFromUserId, 'forUser:', userIdStr)
+    console.log('✅ Processing notification - type:', notification.type, 'fromUser:', normalizedFromUserId, 'forUser:', normalizedCurrentUserId)
     
     // Update notification count - only if unread
     if (!notification.read) {
       const previousCount = unreadNotificationCount.value
       unreadNotificationCount.value = (unreadNotificationCount.value || 0) + 1
       console.log('📊 Notification count updated:', previousCount, '->', unreadNotificationCount.value)
+      
+      // Determine if we should play sound
+      let shouldPlaySound = false
+      let soundReason = ''
       
       // Update thread notifications if it's a thread reply
       if (notification.type === 'thread_reply' && notification.channel) {
@@ -1156,38 +1095,37 @@ const setupSocket = () => {
           const isViewingThisChannel = channelId === currentChannelIdStr && !isViewingDM
           
           // Play notification sound if not viewing this channel
-          // Always try to play sound for thread notifications to ensure both sides hear it
           if (!isViewingThisChannel) {
-            console.log('🔔 Playing sound for thread notification (not viewing channel)')
-            try {
-              await playNotificationSound()
-            } catch (err) {
-              console.error('❌ Failed to play sound for thread notification:', err)
-            }
+            shouldPlaySound = true
+            soundReason = 'thread notification (not viewing channel)'
           } else {
-            console.log('⏭️ Not playing sound - user is viewing this channel')
+            soundReason = 'thread notification (viewing channel)'
           }
         } else {
           console.warn('⚠️ Thread notification received but channel ID is missing:', notification)
         }
       } else {
-        // For other notification types, play sound if count increased
-        if (unreadNotificationCount.value > previousCount) {
-          console.log('🔔 Playing sound for notification (count increased from', previousCount, 'to', unreadNotificationCount.value, ')')
-          try {
-            const soundPlayed = await playNotificationSound()
-            if (soundPlayed) {
-              console.log('✅ Notification sound played successfully')
-            } else {
-              console.warn('⚠️ Notification sound not played (audio not ready)')
-            }
-          } catch (err) {
-            console.error('❌ Failed to play sound for notification:', err)
-          }
-        } else {
-          console.log('⏭️ Not playing sound - count did not increase (previous:', previousCount, 'current:', unreadNotificationCount.value, ')')
-        }
+        // For other notification types, always play sound when a new notification arrives
+        // (not just when count increases, because count might have been updated elsewhere)
+        shouldPlaySound = true
+        soundReason = `notification (type: ${notification.type})`
       }
+      
+      // Play sound if appropriate
+      if (shouldPlaySound) {
+        console.log(`🔔 Playing sound for ${soundReason}`)
+        const soundPlayed = playNotificationSound() // Fire and forget, but log result
+        if (!soundPlayed) {
+          console.warn('⚠️ Sound play returned false - audio may not be initialized')
+        }
+      } else {
+        console.log(`⏭️ Not playing sound - ${soundReason}`)
+      }
+      
+      // CRITICAL: Refresh notifications list in real-time
+      // Fetch notifications to update the UI immediately
+      console.log('🔄 Fetching notifications to update UI...')
+      debouncedFetchNotifications()
     } else {
       console.log('⏭️ Skipping notification - already read')
     }
@@ -1286,11 +1224,9 @@ const setupSocket = () => {
         
         console.log('✅ Updated unread count for channel:', messageChannelId, 'old:', currentCount, 'new:', newCount)
         
-        // Play notification sound for new message in channel (async)
-        console.log('🔔 Playing sound for channel message')
-        playNotificationSound().catch(err => {
-          console.error('❌ Failed to play notification sound:', err)
-        })
+        // Play notification sound for new message in channel
+        console.log('🔔 Playing sound for new channel message')
+        playNotificationSound()
       } else {
         // Channel not in list, debounce refresh to prevent rate limiting
         console.log('⚠️ Channel not in list, will refresh channels')
@@ -1449,10 +1385,8 @@ const setupSocket = () => {
       // 2. Not currently viewing this conversation
       // 3. Unread count increased
       if (!isViewingThisDM && unreadDMCount.value > previousUnreadCount) {
-        console.log('🔔 Playing sound for DM message')
-        playNotificationSound().catch(err => {
-          console.error('❌ Failed to play notification sound:', err)
-        })
+        console.log('🔔 Playing sound for new DM message')
+        playNotificationSound() // Returns boolean, not Promise - no .catch() needed
       } else {
         if (isViewingThisDM) {
           console.log('⏭️ Not playing sound - viewing this DM')
@@ -1482,21 +1416,6 @@ onMounted(async () => {
   // Don't attempt audio initialization on mount - browsers require user interaction
   // Audio will be initialized on first user interaction (click, keydown, etc.)
   await nextTick()
-  console.log('💡 Audio will initialize on first user interaction (click anywhere to enable sounds)')
-  
-  // Register audio initialization listeners (must be in onMounted, not module level)
-  // This ensures listeners are re-added when component is remounted
-  if (!audioListenersRegistered) {
-    initAudioEvents.forEach(eventType => {
-      document.addEventListener(eventType, initAudioOnInteraction, { 
-        once: false, // Keep active to handle suspended contexts
-        passive: true,
-        capture: false // Don't use capture to avoid interfering with other handlers
-      })
-    })
-    audioListenersRegistered = true
-    console.log('✅ Audio initialization listeners registered')
-  }
   
   await fetchWorkspace()
   
@@ -1516,23 +1435,37 @@ onMounted(async () => {
         setupSocket()
       } else {
         console.error('❌ Still no token after fetchUser, cannot connect Socket.IO')
-        return
+        // Don't return - still try to fetch channels even without socket
       }
     } catch (error) {
       console.error('❌ Failed to fetch user:', error)
-      return
+      // Don't return - still try to fetch channels even if socket setup fails
     }
   } else {
     setupSocket()
   }
   
-  // Wait a bit for socket to connect and join workspace
+  // Wait a bit for socket to connect and join workspace (if socket was set up)
   await new Promise(resolve => setTimeout(resolve, 100))
   
-  // Now fetch data
-  await fetchChannels()
-  await fetchNotifications()
-  await fetchDMConversations()
+  // Now fetch data - always fetch even if socket setup failed
+  try {
+    await fetchChannels()
+  } catch (error) {
+    console.error('❌ Failed to fetch channels in onMounted:', error)
+  }
+  
+  try {
+    await fetchNotifications()
+  } catch (error) {
+    console.error('❌ Failed to fetch notifications in onMounted:', error)
+  }
+  
+  try {
+    await fetchDMConversations()
+  } catch (error) {
+    console.error('❌ Failed to fetch DM conversations in onMounted:', error)
+  }
   
   // If we have channels and no channel/DM is selected, redirect to the first channel (welcome)
   if (channels.value.length > 0 && !route.params.channelId && route.name !== 'DirectMessages' && route.name !== 'DirectMessageChat') {
@@ -1586,23 +1519,10 @@ onBeforeUnmount(() => {
     socket.value = null
   }
   
-  // Cleanup audio context
-  if (audioContext && audioContext.state !== 'closed') {
-    audioContext.close().catch(() => {})
-    audioContext = null
-    audioReady = false
-  }
-  
-  // Remove audio initialization listeners (options must match addEventListener exactly)
-  if (audioListenersRegistered) {
-    initAudioEvents.forEach(eventType => {
-      document.removeEventListener(eventType, initAudioOnInteraction, { 
-        capture: false, // Must match the capture option used in addEventListener
-        passive: true // Must match the passive option used in addEventListener
-      })
-    })
-    audioListenersRegistered = false
-    console.log('✅ Audio initialization listeners removed')
+  // Cleanup audio context (shared global context)
+  if (window.notificationAudioContext && window.notificationAudioContext.state !== 'closed') {
+    window.notificationAudioContext.close().catch(() => {})
+    window.notificationAudioContext = null
   }
 })
 

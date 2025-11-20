@@ -756,17 +756,54 @@ const hasUserReacted = (reaction, userId) => {
 
 const setupSocket = () => {
   if (!channelId.value) return
-  if (socket.value) {
-    socket.value.disconnect()
+  
+  // CRITICAL: Default to localhost:3000 if VITE_API_URL is not set
+  const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+  
+  if (!apiUrl) {
+    console.error('❌ No API URL configured for Socket.IO connection')
+    return
   }
   
-  const apiUrl = import.meta.env.VITE_API_URL || ''
-  socket.value = io(apiUrl, {
-    auth: {
-      token: authStore.token,
-      userId: authStore.user?.id
-    }
+  // Disconnect existing socket if any
+  if (socket.value) {
+    console.log('🔄 Disconnecting existing channel socket before reconnecting...')
+    socket.value.removeAllListeners() // Remove all listeners to prevent duplicates
+    socket.value.disconnect()
+    socket.value = null
+  }
+  
+  // CRITICAL: Get token from multiple sources to ensure it's available
+  const token = authStore.token || localStorage.getItem('token')
+  
+  if (!token) {
+    console.error('❌ No authentication token available for Socket.IO connection')
+    return
+  }
+  
+  console.log('🔌 Initializing Channel Socket.IO connection', {
+    apiUrl,
+    channelId: channelId.value,
+    tokenLength: token.length
   })
+  
+  try {
+    socket.value = io(apiUrl, {
+      auth: {
+        token: token,
+        userId: authStore.user?.id || authStore.user?._id
+      },
+      transports: ['polling', 'websocket'],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: Infinity,
+      timeout: 20000
+    })
+  } catch (error) {
+    console.error('❌ Failed to create Socket.IO instance:', error)
+    return
+  }
   
   socket.value.on('connect', () => {
     console.log('🔌 Channel Socket connected, joining channel:', channelId.value)
@@ -794,22 +831,41 @@ const setupSocket = () => {
   // Listen for successful channel join confirmation
   socket.value.on('joined_channel', (data) => {
     console.log('✅ Successfully joined channel room:', data.channelId)
+    console.log('📡 Channel socket is ready to receive messages')
   })
   
-  socket.value.on('disconnect', () => {
-    console.log('🔌 Socket disconnected')
+  socket.value.on('disconnect', (reason) => {
+    console.log('🔌 Channel Socket disconnected:', reason)
+  })
+  
+  socket.value.on('reconnect', (attemptNumber) => {
+    console.log(`🔌 Channel Socket reconnected (attempt ${attemptNumber})`)
+    // Rejoin channel and workspace on reconnect
+    if (channelId.value) {
+      const normalizedChannelId = String(channelId.value).trim()
+      socket.value.emit('join_channel', normalizedChannelId)
+    }
+    if (workspace.value?._id) {
+      const workspaceId = workspace.value._id?._id || workspace.value._id
+      if (workspaceId) {
+        socket.value.emit('join_workspace', String(workspaceId).trim())
+      }
+    }
   })
   
   socket.value.on('error', (error) => {
-    console.error('❌ Socket error:', error)
+    console.error('❌ Channel Socket error:', error)
   })
   
-  socket.value.on('message_created', (message) => {
-    console.log('📨 Message created event received in channel view:', {
+  socket.value.on('message_created', async (message) => {
+    console.log('📨📨📨 Message created event received in channel view:', {
       messageId: message._id?.toString() || message._id,
       messageChannel: message.channel,
+      messageChannelType: typeof message.channel,
       currentChannel: channelId.value,
-      hasThreadParent: !!message.threadParent
+      currentChannelType: typeof channelId.value,
+      hasThreadParent: !!message.threadParent,
+      fullMessage: message
     })
     
     // Normalize channel ID comparison - handle all possible formats
@@ -830,28 +886,115 @@ const setupSocket = () => {
     
     console.log('🔍 Channel ID comparison - message:', messageChannelId, 'current:', currentChannelId, 'match:', messageChannelId === currentChannelId)
     
-    // Only add if it's for this channel and not a thread reply
+    // CRITICAL: Only add if it's for this channel and not a thread reply
+    // Also check if message already exists to prevent duplicates
     if (messageChannelId && currentChannelId && messageChannelId === currentChannelId) {
       if (!message.threadParent) {
-        // Check if message already exists
+        // Check if message already exists - prevent duplicates
         const existingMessage = messages.value.find(m => {
           const mId = m._id?.toString() || m._id
           const msgId = message._id?.toString() || message._id
           return mId === msgId
         })
         
-        if (!existingMessage) {
-          // Ensure message has all required fields
-          const newMessage = {
-            ...message,
-            channel: currentChannelId,
-            reactions: message.reactions || [],
-            mentions: message.mentions || [],
-            readBy: message.readBy || [],
-            threadCount: message.threadCount || 0
+        if (existingMessage) {
+          console.log('⏭️ Message already exists in channel view, skipping:', message._id?.toString() || message._id)
+          return
+        }
+        
+        // Ensure message has all required fields
+        const newMessage = {
+          ...message,
+          channel: currentChannelId,
+          reactions: message.reactions || [],
+          mentions: message.mentions || [],
+          readBy: message.readBy || [],
+          threadCount: message.threadCount || 0,
+          // Ensure user is properly formatted
+          user: message.user || message.user
+        }
+        
+        console.log('✅ Adding new message to channel view:', {
+          messageId: newMessage._id?.toString() || newMessage._id,
+          channel: newMessage.channel,
+          user: newMessage.user,
+          text: newMessage.text?.substring(0, 50)
+        })
+        
+        messages.value.push(newMessage)
+        console.log('✅ Message added successfully. Total messages:', messages.value.length)
+          
+          // CRITICAL: Check if this is our own message - don't play sound for own messages
+          // Normalize both IDs to strings for reliable comparison
+          const userId = authStore.user?._id || authStore.user?.id
+          const userIdStr = userId ? String(userId).trim() : null
+          
+          let messageUserId = null
+          if (newMessage.user) {
+            if (typeof newMessage.user === 'string') {
+              messageUserId = newMessage.user.trim()
+            } else if (newMessage.user._id) {
+              messageUserId = String(newMessage.user._id).trim()
+            } else {
+              messageUserId = String(newMessage.user).trim()
+            }
           }
-          messages.value.push(newMessage)
-          console.log('✅ Added message to channel view:', newMessage._id?.toString() || newMessage._id)
+          
+          const normalizedUserId = userIdStr ? String(userIdStr).trim() : null
+          const normalizedMessageUserId = messageUserId ? String(messageUserId).trim() : null
+          const isOwnMessage = normalizedUserId && normalizedMessageUserId && normalizedUserId === normalizedMessageUserId
+          
+          console.log('🔍 Message ownership check:', {
+            userId: normalizedUserId,
+            messageUserId: normalizedMessageUserId,
+            isOwnMessage,
+            messageId: newMessage._id
+          })
+          
+          // CRITICAL: Only play sound for messages from OTHER users
+          // Sound should NOT play when you send your own message
+          if (!isOwnMessage && normalizedMessageUserId) {
+            console.log('🔔 New message received from another user, playing sound')
+            try {
+              // Use shared audio context (same as Workspace.vue)
+              if (!window.notificationAudioContext) {
+                window.notificationAudioContext = new (window.AudioContext || window.webkitAudioContext)()
+              }
+              const ctx = window.notificationAudioContext
+              
+              // Resume if suspended
+              if (ctx.state === 'suspended') {
+                ctx.resume().then(() => playSound(ctx)).catch(() => playSound(ctx))
+              } else {
+                playSound(ctx)
+              }
+              
+              function playSound(audioCtx) {
+                try {
+                  const oscillator = audioCtx.createOscillator()
+                  const gainNode = audioCtx.createGain()
+                  oscillator.connect(gainNode)
+                  gainNode.connect(audioCtx.destination)
+                  oscillator.frequency.value = 800
+                  oscillator.type = 'sine'
+                  gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime)
+                  gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2)
+                  oscillator.start(audioCtx.currentTime)
+                  oscillator.stop(audioCtx.currentTime + 0.2)
+                  console.log('🔔 Notification sound played for new message from another user')
+                } catch (e) {
+                  console.warn('⚠️ Could not play sound:', e)
+                }
+              }
+            } catch (e) {
+              console.warn('⚠️ Could not initialize notification sound:', e)
+            }
+          } else {
+            console.log('⏭️ Skipping sound - own message or missing user ID')
+          }
+          
+          // Use nextTick to ensure Vue has updated the DOM before scrolling
+          await nextTick()
           scrollToBottom()
           
           // Mark as read if viewing the channel (with a small delay to ensure message is rendered)
@@ -859,9 +1002,6 @@ const setupSocket = () => {
             markMessagesAsRead()
             markChannelAsRead()
           }, 100)
-        } else {
-          console.log('⚠️ Message already exists in view, skipping:', message._id)
-        }
       } else {
         console.log('⚠️ Message is a thread reply, skipping (handled by thread_reply_created)')
       }
@@ -1466,8 +1606,25 @@ const sendMessage = async () => {
       }
     })
     
-    console.log('✅ Message sent:', response.data)
-    messages.value.push(response.data)
+    console.log('✅ Message sent via API:', response.data)
+    
+    // CRITICAL: Add message optimistically for immediate feedback
+    // The socket event will also fire, but we check for duplicates
+    // This ensures the sender sees their message immediately
+    const existingMessage = messages.value.find(m => {
+      const mId = m._id?.toString() || m._id
+      const msgId = response.data._id?.toString() || response.data._id
+      return mId === msgId
+    })
+    
+    if (!existingMessage) {
+      messages.value.push(response.data)
+      console.log('✅ Added own message optimistically')
+    } else {
+      console.log('⏭️ Own message already exists (from socket), skipping duplicate')
+    }
+    
+    await nextTick()
     scrollToBottom()
   } catch (error) {
     console.error('❌ Failed to send message:', error)

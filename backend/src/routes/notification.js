@@ -195,12 +195,25 @@ export const createThreadNotification = async (replyMessage, parentMessage, io =
         }
         
         const roomName = `user:${targetUserId}`
+        
+        // CRITICAL: Verify sender is NOT the recipient before emitting
+        const normalizedReplyUserId = normalizeUserId(replyUserId)
+        if (targetUserId === normalizedReplyUserId) {
+          console.error(`❌ CRITICAL: About to emit thread notification to sender! targetUserId: ${targetUserId}, replyUserId: ${normalizedReplyUserId}`)
+          return // Don't emit to sender
+        }
+        
+        // Get socket count in room to verify it will be received
+        const socketsInRoom = await io.in(roomName).fetchSockets()
+        console.log(`📡 Room ${roomName} has ${socketsInRoom.length} socket(s)`)
+        
         io.to(roomName).emit('notification', notificationObj)
         console.log(`📤 Emitting thread notification to room: ${roomName}`, {
           notificationId: notificationObj._id?.toString() || notificationObj._id,
           type: notificationObj.type,
           targetUserId: targetUserId,
-          fromUserId: normalizeUserId(replyUserId)
+          fromUserId: normalizedReplyUserId,
+          socketsInRoom: socketsInRoom.length
         })
         
         // Also emit notification count update
@@ -209,7 +222,7 @@ export const createThreadNotification = async (replyMessage, parentMessage, io =
           read: false
         })
         io.to(roomName).emit('notification_count_updated', { count })
-        console.log(`✅ Thread notification sent to user:${targetUserId}, count: ${count}`)
+        console.log(`✅ Thread notification sent to user:${targetUserId}, count: ${count}, sockets: ${socketsInRoom.length}`)
       } else {
         console.error('❌ Socket.IO instance not available for notification emission')
       }
@@ -268,12 +281,25 @@ export const createThreadNotification = async (replyMessage, parentMessage, io =
             }
             
             const roomName = `user:${targetUserId}`
+            
+            // CRITICAL: Verify sender is NOT the recipient before emitting
+            const normalizedReplyUserId = normalizeUserId(replyUserId)
+            if (targetUserId === normalizedReplyUserId) {
+              console.error(`❌ CRITICAL: About to emit thread mention notification to sender! targetUserId: ${targetUserId}, replyUserId: ${normalizedReplyUserId}`)
+              continue // Skip this iteration, don't exit the function
+            }
+            
+            // Get socket count in room to verify it will be received
+            const socketsInRoom = await io.in(roomName).fetchSockets()
+            console.log(`📡 Room ${roomName} has ${socketsInRoom.length} socket(s)`)
+            
             io.to(roomName).emit('notification', notificationObj)
             console.log(`📤 Emitting thread mention notification to room: ${roomName}`, {
               notificationId: notificationObj._id?.toString() || notificationObj._id,
               type: notificationObj.type,
               targetUserId: targetUserId,
-              fromUserId: normalizeUserId(replyUserId)
+              fromUserId: normalizedReplyUserId,
+              socketsInRoom: socketsInRoom.length
             })
             
             // Also emit notification count update
@@ -367,12 +393,25 @@ export const createMentionNotification = async (message, channel, workspace, io 
           }
           
           const roomName = `user:${targetUserId}`
+          
+          // CRITICAL: Verify sender is NOT the recipient before emitting
+          const normalizedMessageUserId = normalizeUserId(messageUserId)
+          if (targetUserId === normalizedMessageUserId) {
+            console.error(`❌ CRITICAL: About to emit mention notification to sender! targetUserId: ${targetUserId}, messageUserId: ${normalizedMessageUserId}`)
+            return // Don't emit to sender
+          }
+          
+          // Get socket count in room to verify it will be received
+          const socketsInRoom = await io.in(roomName).fetchSockets()
+          console.log(`📡 Room ${roomName} has ${socketsInRoom.length} socket(s)`)
+          
           io.to(roomName).emit('notification', notificationObj)
           console.log(`📤 Emitting mention notification to room: ${roomName}`, {
             notificationId: notificationObj._id?.toString() || notificationObj._id,
             type: notificationObj.type,
             targetUserId: targetUserId,
-            fromUserId: normalizeUserId(messageUserId)
+            fromUserId: normalizedMessageUserId,
+            socketsInRoom: socketsInRoom.length
           })
           
           // Also emit notification count update
@@ -592,6 +631,12 @@ export const createChannelMessageNotification = async (message, channel, workspa
               return
             }
         
+            // FINAL CHECK: Ensure recipient is not the sender (should never happen, but safety first)
+            if (recipientStr === normalizedSenderId) {
+              console.error(`❌ CRITICAL BUG: Attempted to create notification for sender! recipientStr: ${recipientStr}, normalizedSenderId: ${normalizedSenderId}`)
+              return // Don't create notification for sender
+            }
+            
             // Create notification
             // Note: Using 'mention' type due to Notification model enum limitation
             // This is a channel message notification, not an actual mention
@@ -628,13 +673,25 @@ export const createChannelMessageNotification = async (message, channel, workspa
               }
               
               const roomName = `user:${recipientStr}`
+              
+              // CRITICAL: Verify sender is NOT the recipient before emitting
+              if (recipientStr === normalizedSenderId) {
+                console.error(`❌ CRITICAL: About to emit notification to sender! recipientStr: ${recipientStr}, normalizedSenderId: ${normalizedSenderId}`)
+                return // Don't emit to sender
+              }
+              
+              // Get socket count in room to verify it will be received
+              const socketsInRoom = await io.in(roomName).fetchSockets()
+              console.log(`📡 Room ${roomName} has ${socketsInRoom.length} socket(s)`)
+              
               io.to(roomName).emit('notification', notificationObj)
               console.log(`📤 Emitting channel message notification to room: ${roomName}`, {
                 notificationId: notificationObj._id?.toString() || notificationObj._id,
                 type: notificationObj.type,
                 targetUserId: recipientStr,
                 fromUserId: normalizedSenderId,
-                channelId: channelId
+                channelId: channelId,
+                socketsInRoom: socketsInRoom.length
               })
               
               // Also emit notification count update
@@ -644,7 +701,7 @@ export const createChannelMessageNotification = async (message, channel, workspa
                 read: false
               })
               io.to(roomName).emit('notification_count_updated', { count })
-              console.log(`✅ Channel message notification sent to user:${recipientStr}, count: ${count}`)
+              console.log(`✅ Channel message notification sent to user:${recipientStr}, count: ${count}, sockets: ${socketsInRoom.length}`)
             }
           } catch (recipientError) {
             // Log error for this recipient but continue with others
