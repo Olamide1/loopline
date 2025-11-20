@@ -583,6 +583,10 @@ const dmConversations = ref([])
 // Socket.IO for real-time updates
 const socket = ref(null)
 
+// Track authentication failures across socket reconnections (module scope to persist across setupSocket() calls)
+let authFailureCount = 0
+const MAX_AUTH_FAILURES = 3
+
 const showCreateChannel = ref(false)
 const creatingChannel = ref(false)
 const createChannelError = ref('')
@@ -680,53 +684,63 @@ const initNotificationSound = async () => {
 // Play notification sound - creates a pleasant beep with proper async handling
 const playNotificationSound = async () => {
   try {
-    // Check if audio is initialized and ready
-    if (!audioContext || !audioReady || audioContext.state !== 'running') {
-      // If we haven't attempted initialization yet, log a message
-      // We can't initialize here without a user gesture, so we'll wait
-      if (!audioInitAttempted) {
-        console.log('🔇 Audio not initialized yet - waiting for user interaction...')
-        console.log('💡 Tip: Click anywhere on the page to enable notification sounds')
-      } else {
-        console.warn('⚠️ Audio context not available or not running:', audioContext?.state || 'not initialized')
-        console.log('💡 User interaction required to enable audio')
+    // Try to initialize/resume audio context if needed
+    let ctx = audioContext
+    
+    // If no context or not ready, try to initialize (might work if user has interacted)
+    if (!ctx || !audioReady || ctx.state !== 'running') {
+      console.log('🔄 Attempting to initialize/resume audio context...')
+      ctx = await initNotificationSound()
+      
+      if (!ctx || ctx.state !== 'running') {
+        // If we haven't attempted initialization yet, log a message
+        if (!audioInitAttempted) {
+          console.log('🔇 Audio not initialized yet - waiting for user interaction...')
+          console.log('💡 Tip: Click anywhere on the page to enable notification sounds')
+        } else {
+          console.warn('⚠️ Audio context not available or not running:', ctx?.state || 'not initialized')
+          console.log('💡 User interaction required to enable audio')
+        }
+        return false // Can't play sound without user interaction
       }
-      return // Can't play sound without user interaction
     }
     
     // Verify state before playing
-    if (audioContext.state === 'suspended') {
+    if (ctx.state === 'suspended') {
       console.log('🔄 Audio context suspended, attempting to resume...')
       try {
         // This might fail if not in response to user gesture
-        await audioContext.resume()
-        if (audioContext.state !== 'running') {
+        await ctx.resume()
+        if (ctx.state !== 'running') {
           console.warn('⚠️ Could not resume AudioContext - user interaction required')
           audioReady = false
-          return
+          return false
         }
       } catch (resumeError) {
         console.warn('⚠️ Failed to resume AudioContext:', resumeError)
         audioReady = false
-        return
+        return false
       }
     }
     
     // Final check before playing
-    if (!audioContext || audioContext.state !== 'running') {
-      console.warn('⚠️ Audio context not in running state:', audioContext?.state || 'null')
+    if (!ctx || ctx.state !== 'running') {
+      console.warn('⚠️ Audio context not in running state:', ctx?.state || 'null')
       audioReady = false
-      return
+      return false
     }
     
+    // Update audioContext reference if we created/resumed it
+    audioContext = ctx
+    
     // Create a pleasant notification beep (two-tone)
-    const now = audioContext.currentTime
+    const now = ctx.currentTime
     
     // First beep - more noticeable
-    const osc1 = audioContext.createOscillator()
-    const gain1 = audioContext.createGain()
+    const osc1 = ctx.createOscillator()
+    const gain1 = ctx.createGain()
     osc1.connect(gain1)
-    gain1.connect(audioContext.destination)
+    gain1.connect(ctx.destination)
     
     osc1.frequency.value = 800
     osc1.type = 'sine'
@@ -738,10 +752,10 @@ const playNotificationSound = async () => {
     osc1.stop(now + 0.2)
     
     // Second beep (slightly higher pitch) - creates "ding-dong" effect
-    const osc2 = audioContext.createOscillator()
-    const gain2 = audioContext.createGain()
+    const osc2 = ctx.createOscillator()
+    const gain2 = ctx.createGain()
     osc2.connect(gain2)
-    gain2.connect(audioContext.destination)
+    gain2.connect(ctx.destination)
     
     osc2.frequency.value = 1000
     osc2.type = 'sine'
@@ -753,6 +767,7 @@ const playNotificationSound = async () => {
     osc2.stop(now + 0.4)
     
     console.log('🔔 Notification sound played successfully')
+    return true // Successfully played sound
   } catch (e) {
     console.error('❌ Could not play notification sound:', e)
     // Reset audio state on error so it can be reinitialized
@@ -760,6 +775,7 @@ const playNotificationSound = async () => {
       audioContext = null
       audioReady = false
     }
+    return false // Failed to play sound
   }
 }
 
@@ -797,6 +813,7 @@ let audioListenersRegistered = false
 const fetchNotificationsTimer = ref(null)
 const fetchChannelsTimer = ref(null)
 const fetchDMConversationsTimer = ref(null)
+const notificationPollInterval = ref(null)
 
 // Debounced versions of fetch functions
 const debouncedFetchNotifications = () => {
@@ -832,19 +849,66 @@ const debouncedFetchDMConversations = () => {
 // Setup Socket.IO connection
 const setupSocket = () => {
   if (socket.value) {
+    console.log('🔄 Disconnecting existing socket before reconnecting...')
     socket.value.disconnect()
+    socket.value = null
   }
   
   const apiUrl = import.meta.env.VITE_API_URL || ''
-  socket.value = io(apiUrl, {
-    auth: {
-      token: authStore.token,
-      userId: authStore.user?.id
-    }
+  
+  // CRITICAL: Get token from multiple sources to ensure it's available
+  const token = authStore.token || localStorage.getItem('token')
+  
+  if (!token) {
+    console.error('❌ No authentication token available for Socket.IO connection')
+    console.error('Auth store token:', authStore.token)
+    console.error('LocalStorage token:', localStorage.getItem('token'))
+    console.error('Auth store user:', authStore.user)
+    console.error('⚠️ Socket.IO connection aborted - no token available')
+    // Don't attempt connection without token
+    return
+  }
+  
+  console.log('🔌 Initializing Socket.IO connection', {
+    apiUrl,
+    tokenLength: token.length,
+    tokenPrefix: token.substring(0, 20) + '...',
+    userId: authStore.user?.id || authStore.user?._id
   })
+  
+  try {
+    socket.value = io(apiUrl, {
+      auth: {
+        token: token, // Use the token we just retrieved
+        userId: authStore.user?.id || authStore.user?._id
+      },
+      // Socket.IO reconnection options
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: Infinity,
+      timeout: 20000,
+      // Force new connection to avoid stale connections
+      forceNew: false
+    })
+  } catch (error) {
+    console.error('❌ Failed to create Socket.IO instance:', error)
+    return
+  }
   
   socket.value.on('connect', () => {
     console.log('🔌 Workspace Socket connected')
+    
+    // Reset auth failure count on successful connection
+    authFailureCount = 0
+    console.log('✅ Socket connected - authentication successful')
+    
+    // Fetch notifications immediately on connect to catch any missed while offline
+    console.log('📥 Fetching notifications on socket connect...')
+    fetchNotifications().catch(err => {
+      console.error('❌ Failed to fetch notifications on connect:', err)
+    })
+    
     // Join workspace room immediately on connect
     if (workspaceId) {
       socket.value.emit('join_workspace', workspaceId)
@@ -854,32 +918,87 @@ const setupSocket = () => {
       setTimeout(() => {
         // Use debounced versions to prevent rate limiting
         debouncedFetchChannels()
-        debouncedFetchNotifications()
         debouncedFetchDMConversations()
       }, 1000) // Wait 1 second after connect
     }
   })
   
   // Handle reconnection
-  socket.value.on('reconnect', () => {
-    console.log('🔌 Workspace Socket reconnected')
+  socket.value.on('reconnect', (attemptNumber) => {
+    console.log(`🔌 Workspace Socket reconnected (attempt ${attemptNumber})`)
+    
+    // Fetch notifications on reconnect
+    console.log('📥 Fetching notifications on socket reconnect...')
+    fetchNotifications().catch(err => {
+      console.error('❌ Failed to fetch notifications on reconnect:', err)
+    })
+    
     if (workspaceId) {
       socket.value.emit('join_workspace', workspaceId)
       // Use debounced versions to prevent rate limiting on reconnect
       setTimeout(() => {
         debouncedFetchChannels()
-        debouncedFetchNotifications()
         debouncedFetchDMConversations()
       }, 1000)
     }
   })
   
-  socket.value.on('disconnect', () => {
-    console.log('🔌 Workspace Socket disconnected')
+  socket.value.on('disconnect', (reason) => {
+    console.log('🔌 Workspace Socket disconnected, reason:', reason)
+    // If disconnect was due to server closing, don't try to reconnect immediately
+    if (reason === 'io server disconnect') {
+      console.log('⚠️ Server closed connection, will not auto-reconnect')
+    }
+    // If it's an authentication error, log it
+    if (reason === 'Authentication error' || reason?.includes('Authentication')) {
+      console.error('❌ Socket disconnected due to authentication error:', reason)
+    }
+  })
+  
+  // Track authentication failures to prevent infinite reconnection loops
+  // Note: authFailureCount is declared at module scope to persist across multiple setupSocket() calls
+  
+  socket.value.on('connect_error', (error) => {
+    const errorMessage = error.message || 'Unknown error'
+    console.error('❌ Socket connection error:', {
+      message: errorMessage,
+      description: error.description,
+      type: error.type,
+      data: error.data
+    })
+    
+    // Check if it's an authentication error
+    const isAuthError = errorMessage.includes('Authentication error') || 
+                       errorMessage.includes('token') || 
+                       errorMessage.includes('server error') // "server error" is often auth-related
+    
+    if (isAuthError) {
+      authFailureCount++
+      console.warn(`⚠️ Authentication error detected (attempt ${authFailureCount}/${MAX_AUTH_FAILURES})`)
+      
+      if (authFailureCount >= MAX_AUTH_FAILURES) {
+        console.error('❌ Too many authentication failures, stopping reconnection attempts')
+        // Disconnect and prevent further reconnection attempts
+        socket.value.disconnect()
+        socket.value.io.opts.reconnection = false
+        
+        // Show user-friendly message (optional - you can add a toast/notification here)
+        console.error('💡 Please refresh the page or re-login to reconnect')
+      } else {
+        // For auth errors, wait longer before reconnecting
+        console.log('⏳ Waiting before retry...')
+      }
+    } else {
+      // Reset counter for non-auth errors
+      authFailureCount = 0
+    }
   })
   
   socket.value.on('error', (error) => {
-    console.error('❌ Socket error:', error)
+    console.error('❌ Socket error:', {
+      message: error.message,
+      error: error
+    })
   })
   
   // Listen for channel updates
@@ -980,13 +1099,36 @@ const setupSocket = () => {
       return
     }
     
-    // Check if notification is from the current user (don't notify about own actions)
-    // IMPORTANT: notification.fromUser is the person who triggered the notification (e.g., reply author)
-    // notification.user is the person who should receive it (e.g., parent message author)
+    // CRITICAL: Check if notification is from the current user (don't notify about own actions)
+    // IMPORTANT: notification.fromUser is the person who triggered the notification (e.g., reply author, message sender)
+    // notification.user is the person who should receive it (e.g., parent message author, channel member)
     const notificationFromUserId = notification.fromUser?._id?.toString() || notification.fromUser?.toString() || notification.fromUser
-    if (notificationFromUserId && userIdStr === notificationFromUserId) {
-      console.log('⏭️ Skipping notification - from current user (own action). fromUser:', notificationFromUserId, 'currentUser:', userIdStr)
-      return
+    
+    // Normalize both IDs for comparison (ensure they're both strings)
+    const normalizedFromUserId = notificationFromUserId ? String(notificationFromUserId) : null
+    const normalizedCurrentUserId = userIdStr ? String(userIdStr) : null
+    
+    // CRITICAL: If the notification is FROM the current user, skip it (they sent the message)
+    if (normalizedFromUserId && normalizedCurrentUserId) {
+      // Compare as strings to ensure exact match
+      if (normalizedFromUserId === normalizedCurrentUserId) {
+        console.log('⏭️ Skipping notification - from current user (own action).', {
+          fromUser: normalizedFromUserId,
+          currentUser: normalizedCurrentUserId,
+          notificationType: notification.type,
+          notificationId: notification._id
+        })
+        return
+      }
+      
+      // Also check if they're the same when trimmed (in case of whitespace issues)
+      if (normalizedFromUserId.trim() === normalizedCurrentUserId.trim()) {
+        console.log('⏭️ Skipping notification - from current user (trimmed match).', {
+          fromUser: normalizedFromUserId,
+          currentUser: normalizedCurrentUserId
+        })
+        return
+      }
     }
     
     console.log('✅ Processing notification - type:', notification.type, 'fromUser:', notificationFromUserId, 'forUser:', userIdStr)
@@ -1031,12 +1173,19 @@ const setupSocket = () => {
       } else {
         // For other notification types, play sound if count increased
         if (unreadNotificationCount.value > previousCount) {
-          console.log('🔔 Playing sound for notification (count increased)')
+          console.log('🔔 Playing sound for notification (count increased from', previousCount, 'to', unreadNotificationCount.value, ')')
           try {
-            await playNotificationSound()
+            const soundPlayed = await playNotificationSound()
+            if (soundPlayed) {
+              console.log('✅ Notification sound played successfully')
+            } else {
+              console.warn('⚠️ Notification sound not played (audio not ready)')
+            }
           } catch (err) {
             console.error('❌ Failed to play sound for notification:', err)
           }
+        } else {
+          console.log('⏭️ Not playing sound - count did not increase (previous:', previousCount, 'current:', unreadNotificationCount.value, ')')
         }
       }
     } else {
@@ -1046,8 +1195,24 @@ const setupSocket = () => {
   
   // Listen for notification count updates
   socket.value.on('notification_count_updated', (data) => {
-    console.log('🔔 Notification count updated:', data)
-    unreadNotificationCount.value = data.count || 0
+    console.log('🔔 Notification count updated event received:', data)
+    
+    // CRITICAL: Don't blindly trust the backend count - it might include sender's own notifications
+    // We'll fetch the actual count from the API which filters correctly
+    // But we can use this as a hint that something changed
+    if (data.count !== undefined && data.count !== null) {
+      // Only update if it's higher than current (might be a new notification)
+      // But we'll verify by fetching notifications to ensure sender's notifications are filtered
+      const currentCount = unreadNotificationCount.value || 0
+      if (data.count > currentCount) {
+        console.log('📊 Notification count increased, will verify by fetching notifications...')
+        // Fetch notifications to get the correct filtered count
+        debouncedFetchNotifications()
+      } else {
+        // If count decreased or stayed same, trust the backend
+        unreadNotificationCount.value = data.count
+      }
+    }
   })
   
   // Listen for new messages to update unread counts in real-time
@@ -1337,7 +1502,29 @@ onMounted(async () => {
   
   // Setup Socket.IO for real-time updates BEFORE fetching data
   // This ensures we don't miss any real-time events
-  setupSocket()
+  // CRITICAL: Ensure token is available before setting up socket
+  const token = authStore.token || localStorage.getItem('token')
+  if (!token) {
+    console.error('❌ Cannot setup Socket.IO - no token available')
+    console.error('Attempting to fetch user to refresh token...')
+    try {
+      await authStore.fetchUser()
+      // Retry socket setup if token is now available
+      const retryToken = authStore.token || localStorage.getItem('token')
+      if (retryToken) {
+        console.log('✅ Token retrieved, setting up socket...')
+        setupSocket()
+      } else {
+        console.error('❌ Still no token after fetchUser, cannot connect Socket.IO')
+        return
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch user:', error)
+      return
+    }
+  } else {
+    setupSocket()
+  }
   
   // Wait a bit for socket to connect and join workspace
   await new Promise(resolve => setTimeout(resolve, 100))
@@ -1370,6 +1557,21 @@ onMounted(async () => {
   
   // Start polling as fallback (Socket.IO should handle real-time updates)
   startPolling()
+  
+  // Also poll for notifications if socket is disconnected
+  const startNotificationPolling = () => {
+    if (notificationPollInterval.value) clearInterval(notificationPollInterval.value)
+    notificationPollInterval.value = setInterval(() => {
+      // Only poll if socket is disconnected
+      if (!socket.value || !socket.value.connected) {
+        console.log('⚠️ Socket disconnected, polling for notifications...')
+        debouncedFetchNotifications()
+      }
+    }, 30000) // Poll every 30 seconds when disconnected
+  }
+  
+  // Start notification polling as fallback
+  startNotificationPolling()
 })
 
 // Cleanup on unmount (must be at top level, not inside onMounted)
@@ -1378,6 +1580,7 @@ onBeforeUnmount(() => {
   if (fetchNotificationsTimer.value) clearTimeout(fetchNotificationsTimer.value)
   if (fetchChannelsTimer.value) clearTimeout(fetchChannelsTimer.value)
   if (fetchDMConversationsTimer.value) clearTimeout(fetchDMConversationsTimer.value)
+  if (notificationPollInterval.value) clearInterval(notificationPollInterval.value)
   if (socket.value) {
     socket.value.disconnect()
     socket.value = null
@@ -1493,14 +1696,8 @@ const fetchNotifications = async () => {
   try {
     const apiUrl = import.meta.env.VITE_API_URL || ''
     const token = authStore.token || localStorage.getItem('token')
-    
-    // Get unread count
-    const countResponse = await axios.get(`${apiUrl}/api/notifications/unread/count`, {
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    })
-    unreadNotificationCount.value = countResponse.data.count || 0
+    const userId = authStore.user?._id || authStore.user?.id
+    const userIdStr = userId?.toString()
     
     // Get thread notifications grouped by channel
     const notificationsResponse = await axios.get(`${apiUrl}/api/notifications?unreadOnly=true&limit=100`, {
@@ -1510,7 +1707,31 @@ const fetchNotifications = async () => {
     })
     
     const notifications = Array.isArray(notificationsResponse.data) ? notificationsResponse.data : []
-    const threadNotifs = notifications.filter(n => n.type === 'thread_reply' && n.channel)
+    
+    // CRITICAL: Filter out notifications from the current user (sender shouldn't see their own notifications)
+    const filteredNotifications = notifications.filter(notif => {
+      const notifFromUserId = notif.fromUser?._id?.toString() || notif.fromUser?.toString() || notif.fromUser
+      const notifTargetUserId = notif.user?._id?.toString() || notif.user?.toString() || notif.user
+      
+      // Only include if:
+      // 1. The notification is FOR the current user (notif.user === current user)
+      // 2. The notification is NOT FROM the current user (notif.fromUser !== current user)
+      const isForCurrentUser = userIdStr && notifTargetUserId && userIdStr === notifTargetUserId
+      const isFromCurrentUser = userIdStr && notifFromUserId && userIdStr === notifFromUserId
+      
+      if (isForCurrentUser && !isFromCurrentUser) {
+        return true
+      } else if (isFromCurrentUser) {
+        console.log('⏭️ Filtering out notification from current user:', notif.type, 'fromUser:', notifFromUserId)
+        return false
+      }
+      return false
+    })
+    
+    // Update unread count to only include filtered notifications
+    unreadNotificationCount.value = filteredNotifications.length
+    
+    const threadNotifs = filteredNotifications.filter(n => n.type === 'thread_reply' && n.channel)
     
     // Group by channel (handle both populated and non-populated channel objects)
     const channelCounts = {}
@@ -1522,7 +1743,7 @@ const fetchNotifications = async () => {
     })
     
     threadNotifications.value = channelCounts
-    console.log('✅ Fetched notifications - unread count:', unreadNotificationCount.value, 'thread notifications:', channelCounts)
+    console.log('✅ Fetched notifications - unread count:', unreadNotificationCount.value, 'thread notifications:', channelCounts, 'filtered from:', notifications.length, 'total')
   } catch (error) {
     if (error.response?.status === 429) {
       console.warn('⚠️ Rate limited on notifications fetch, will retry later')

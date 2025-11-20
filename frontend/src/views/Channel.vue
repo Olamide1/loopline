@@ -769,20 +769,31 @@ const setupSocket = () => {
   })
   
   socket.value.on('connect', () => {
-    console.log('🔌 Socket connected, joining channel:', channelId.value)
+    console.log('🔌 Channel Socket connected, joining channel:', channelId.value)
     
-    // Join channel room for messages
+    // Join channel room for messages - ensure ID is normalized
     if (channelId.value) {
-      socket.value.emit('join_channel', channelId.value.toString())
+      const normalizedChannelId = String(channelId.value).trim()
+      console.log('📡 Emitting join_channel with ID:', normalizedChannelId)
+      socket.value.emit('join_channel', normalizedChannelId)
+    } else {
+      console.error('❌ Cannot join channel - channelId.value is null/undefined')
     }
     
     // Join workspace for presence updates and sidebar updates
     if (workspace.value?._id) {
       const workspaceId = workspace.value._id?._id || workspace.value._id
       if (workspaceId) {
-        socket.value.emit('join_workspace', workspaceId.toString())
+        const normalizedWorkspaceId = String(workspaceId).trim()
+        console.log('📡 Emitting join_workspace with ID:', normalizedWorkspaceId)
+        socket.value.emit('join_workspace', normalizedWorkspaceId)
       }
     }
+  })
+  
+  // Listen for successful channel join confirmation
+  socket.value.on('joined_channel', (data) => {
+    console.log('✅ Successfully joined channel room:', data.channelId)
   })
   
   socket.value.on('disconnect', () => {
@@ -794,38 +805,71 @@ const setupSocket = () => {
   })
   
   socket.value.on('message_created', (message) => {
-    console.log('📨 Message created in channel view:', message)
+    console.log('📨 Message created event received in channel view:', {
+      messageId: message._id?.toString() || message._id,
+      messageChannel: message.channel,
+      currentChannel: channelId.value,
+      hasThreadParent: !!message.threadParent
+    })
     
-    // Normalize channel ID comparison
-    const messageChannelId = message.channel?.toString() || message.channel?._id?.toString() || message.channel
-    const currentChannelId = channelId.value?.toString()
+    // Normalize channel ID comparison - handle all possible formats
+    let messageChannelId = null
+    if (message.channel) {
+      if (typeof message.channel === 'string') {
+        messageChannelId = message.channel.trim()
+      } else if (message.channel._id) {
+        messageChannelId = String(message.channel._id).trim()
+      } else if (message.channel.toString) {
+        messageChannelId = String(message.channel.toString()).trim()
+      } else {
+        messageChannelId = String(message.channel).trim()
+      }
+    }
+    
+    const currentChannelId = channelId.value ? String(channelId.value).trim() : null
+    
+    console.log('🔍 Channel ID comparison - message:', messageChannelId, 'current:', currentChannelId, 'match:', messageChannelId === currentChannelId)
     
     // Only add if it's for this channel and not a thread reply
-    if (messageChannelId === currentChannelId) {
-      if (!message.threadParent && !messages.value.find(m => m._id === message._id)) {
-        // Ensure message has all required fields
-        const newMessage = {
-          ...message,
-          channel: currentChannelId,
-          reactions: message.reactions || [],
-          mentions: message.mentions || [],
-          readBy: message.readBy || [],
-          threadCount: message.threadCount || 0
-        }
-        messages.value.push(newMessage)
-        console.log('✅ Added message to channel view:', newMessage._id)
-        scrollToBottom()
+    if (messageChannelId && currentChannelId && messageChannelId === currentChannelId) {
+      if (!message.threadParent) {
+        // Check if message already exists
+        const existingMessage = messages.value.find(m => {
+          const mId = m._id?.toString() || m._id
+          const msgId = message._id?.toString() || message._id
+          return mId === msgId
+        })
         
-        // Mark as read if viewing the channel (with a small delay to ensure message is rendered)
-        setTimeout(() => {
-          markMessagesAsRead()
-          markChannelAsRead()
-        }, 100)
+        if (!existingMessage) {
+          // Ensure message has all required fields
+          const newMessage = {
+            ...message,
+            channel: currentChannelId,
+            reactions: message.reactions || [],
+            mentions: message.mentions || [],
+            readBy: message.readBy || [],
+            threadCount: message.threadCount || 0
+          }
+          messages.value.push(newMessage)
+          console.log('✅ Added message to channel view:', newMessage._id?.toString() || newMessage._id)
+          scrollToBottom()
+          
+          // Mark as read if viewing the channel (with a small delay to ensure message is rendered)
+          setTimeout(() => {
+            markMessagesAsRead()
+            markChannelAsRead()
+          }, 100)
+        } else {
+          console.log('⚠️ Message already exists in view, skipping:', message._id)
+        }
       } else {
-        console.log('⚠️ Message already exists or is a thread reply, skipping')
+        console.log('⚠️ Message is a thread reply, skipping (handled by thread_reply_created)')
       }
     } else {
-      console.log('⚠️ Message is for different channel:', messageChannelId, 'current:', currentChannelId)
+      console.log('⚠️ Message is for different channel or channel ID mismatch:', {
+        messageChannel: messageChannelId,
+        currentChannel: currentChannelId
+      })
     }
   })
   

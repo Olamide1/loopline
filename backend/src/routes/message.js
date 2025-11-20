@@ -105,19 +105,34 @@ router.post('/', async (req, res) => {
     const io = req.app.get('io')
     if (io) {
       const messageObj = message.toObject ? message.toObject() : message
-      const channelIdStr = channel.toString()
+      // CRITICAL: Normalize channel ID to string for consistent room names
+      const channelIdStr = channel ? String(channel).trim() : null
       
-      // Ensure channel ID is a string in the message object
-      messageObj.channel = channelIdStr
-      
-      if (threadParent) {
-        // Thread reply - emit to thread listeners
-        io.to(`thread:${threadParent}`).emit('thread_reply_created', messageObj)
-        // Also emit to channel for thread count updates
-        io.to(`channel:${channelIdStr}`).emit('thread_reply_created', messageObj)
+      if (!channelIdStr) {
+        console.error('❌ Cannot broadcast message - invalid channel ID:', channel)
       } else {
-        // Regular message - broadcast to channel
-        io.to(`channel:${channelIdStr}`).emit('message_created', messageObj)
+        // Ensure channel ID is a string in the message object
+        messageObj.channel = channelIdStr
+        
+        if (threadParent) {
+          // Thread reply - emit to thread listeners
+          const threadIdStr = threadParent ? String(threadParent).trim() : null
+          if (threadIdStr) {
+            io.to(`thread:${threadIdStr}`).emit('thread_reply_created', messageObj)
+            console.log(`📤 Emitted thread_reply_created to thread:${threadIdStr}`)
+          }
+          // Also emit to channel for thread count updates
+          io.to(`channel:${channelIdStr}`).emit('thread_reply_created', messageObj)
+          console.log(`📤 Emitted thread_reply_created to channel:${channelIdStr}`)
+        } else {
+          // Regular message - broadcast to channel
+          const roomName = `channel:${channelIdStr}`
+          io.to(roomName).emit('message_created', messageObj)
+          console.log(`📤 Emitted message_created to ${roomName}`, {
+            messageId: messageObj._id?.toString() || messageObj._id,
+            channelId: channelIdStr
+          })
+        }
       }
       
       // Also broadcast to workspace for activity updates and sidebar unread counts
@@ -140,20 +155,87 @@ router.post('/', async (req, res) => {
       }
     }
     
-    // Create notifications
-    const { createThreadNotification, createMentionNotification } = await import('./notification.js')
-    
-    // Create notification if this is a thread reply
-    if (threadParent) {
-      await createThreadNotification(message, threadParent, io)
-    }
-    
-    // Create mention notifications for regular messages (not thread replies)
-    if (!threadParent && mentions && mentions.length > 0) {
-      await createMentionNotification(message, channelDoc, workspace, io)
-    }
-    
+    // Send response immediately - don't wait for notifications
     res.status(201).json(message)
+    
+    // Create notifications asynchronously (fire-and-forget) to avoid blocking response
+    // This ensures message creation is fast and notifications don't delay the response
+    setImmediate(async () => {
+      try {
+        const { createThreadNotification, createMentionNotification, createChannelMessageNotification } = await import('./notification.js')
+        
+        // CRITICAL: Normalize sender ID to string for consistent comparison
+        // message.user might be ObjectId or populated object, normalize it
+        const senderId = message.user?._id?.toString() || message.user?.toString() || req.user._id.toString()
+        const normalizedSenderId = String(senderId).trim()
+        
+        // Ensure message.user is set to normalized ID for notification functions
+        if (!message.user || typeof message.user !== 'string') {
+          message.user = normalizedSenderId
+        }
+        
+        // Create notification if this is a thread reply
+        if (threadParent) {
+          await createThreadNotification(message, threadParent, io)
+        } else {
+          // For regular messages (not thread replies)
+          if (mentions && mentions.length > 0) {
+            // Create mention notifications for mentioned users
+            await createMentionNotification(message, channelDoc, workspace, io)
+          } else {
+            // CRITICAL: Populate workspace and channel before creating notifications
+            // Re-fetch workspace with populated fields to ensure we have all member data
+            let populatedWorkspace = workspace
+            try {
+              const Workspace = (await import('../models/Workspace.js')).default
+              if (workspace && workspace._id) {
+                const fetched = await Workspace.findById(workspace._id)
+                  .populate('admin', '_id name email')
+                  .populate('members.user', '_id name email')
+                
+                if (fetched) {
+                  populatedWorkspace = fetched
+                } else {
+                  console.warn('⚠️ Could not fetch populated workspace for notifications, using existing workspace')
+                }
+              } else {
+                console.warn('⚠️ Workspace not properly defined for notifications')
+              }
+            } catch (populateError) {
+              console.error('❌ Error populating workspace for notifications:', populateError)
+              // Continue with existing workspace
+            }
+            
+            // Re-fetch channel with populated members if it's private
+            let populatedChannel = channelDoc
+            try {
+              if (channelDoc.privacy === 'private' && channelDoc._id) {
+                const Channel = (await import('../models/Channel.js')).default
+                const fetchedChannel = await Channel.findById(channelDoc._id)
+                  .populate('members', '_id name email')
+                
+                if (fetchedChannel) {
+                  populatedChannel = fetchedChannel
+                } else {
+                  console.warn('⚠️ Could not fetch populated channel for notifications, using existing channel')
+                }
+              }
+            } catch (populateError) {
+              console.error('❌ Error populating channel for notifications:', populateError)
+              // Continue with existing channel
+            }
+            
+            // Create notifications for all channel members (regular channel message)
+            // Pass normalized sender ID to ensure proper exclusion
+            await createChannelMessageNotification(message, populatedChannel, populatedWorkspace, io, normalizedSenderId)
+          }
+        }
+      } catch (notificationError) {
+        // Log error but don't fail message creation (already sent response)
+        console.error('❌ Error creating notifications (message already sent):', notificationError)
+        console.error('Notification error stack:', notificationError.stack)
+      }
+    })
   } catch (error) {
     res.status(500).json({ message: 'Failed to create message', error: error.message })
   }

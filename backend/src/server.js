@@ -27,8 +27,33 @@ const httpServer = createServer(app)
 const io = new Server(httpServer, {
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-    methods: ['GET', 'POST']
-  }
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  // Allow connection attempts to be logged even if they fail
+  allowRequest: (req, callback) => {
+    // Log connection attempts for debugging
+    // Socket.IO passes auth in query params or headers
+    const queryToken = req._query?.token || req._query?.auth?.token
+    const headerToken = req.headers?.authorization?.replace('Bearer ', '')
+    const token = queryToken || headerToken || 'missing'
+    
+    console.log('🔌 Socket.IO connection attempt:', {
+      url: req.url,
+      method: req.method,
+      origin: req.headers.origin,
+      hasToken: token !== 'missing',
+      tokenLength: token !== 'missing' ? token.length : 0,
+      queryParams: Object.keys(req._query || {}),
+      hasAuthInQuery: !!req._query?.auth,
+      hasAuthInHeaders: !!req.headers?.authorization
+    })
+    
+    // Allow all connection attempts - authentication will happen in middleware
+    callback(null, true)
+  },
+  // Add error handler at server level
+  transports: ['polling', 'websocket']
 })
 
 // Middleware

@@ -4,6 +4,15 @@ import DirectMessage from '../models/DirectMessage.js'
 import DirectMessageContent from '../models/DirectMessageContent.js'
 import User from '../models/User.js'
 
+// Helper function to normalize user ID
+const normalizeUserId = (user) => {
+  if (!user) return null
+  if (typeof user === 'string') return user
+  if (user._id) return user._id.toString()
+  if (user.toString) return user.toString()
+  return String(user)
+}
+
 const router = express.Router()
 router.use(authenticate)
 
@@ -181,6 +190,126 @@ router.post('/conversation/:conversationId/message', async (req, res) => {
     
     await conversation.save()
     await conversation.populate('participants', 'name email avatar')
+    
+    // Create DM notification for the other participant
+    if (otherParticipant) {
+      try {
+        const Notification = (await import('../models/Notification.js')).default
+        const DirectMessageContent = (await import('../models/DirectMessageContent.js')).default
+        const otherParticipantId = normalizeUserId(otherParticipant)
+        const senderId = normalizeUserId(req.user._id)
+        
+        // Find shared workspace for the notification (if any)
+        const Workspace = (await import('../models/Workspace.js')).default
+        let sharedWorkspaceId = null
+        
+        try {
+          const sharedWorkspaces = await Workspace.find({
+            $or: [
+              { admin: { $in: [otherParticipantId, senderId] } },
+              { 'members.user': { $in: [otherParticipantId, senderId] } }
+            ]
+          }).select('_id admin members').lean()
+          
+          // Find workspace where both users are members
+          for (const ws of sharedWorkspaces) {
+            const workspaceUserIds = new Set()
+            if (ws.admin) workspaceUserIds.add(ws.admin.toString())
+            if (ws.members) {
+              ws.members.forEach(m => {
+                const memberId = (m.user?._id || m.user || m).toString()
+                workspaceUserIds.add(memberId)
+              })
+            }
+            
+            if (workspaceUserIds.has(otherParticipantId) && workspaceUserIds.has(senderId)) {
+              sharedWorkspaceId = ws._id.toString()
+              break
+            }
+          }
+        } catch (wsError) {
+          console.warn('⚠️ Could not find shared workspace for DM notification:', wsError)
+        }
+        
+        // For DM notifications, we need to reference the DirectMessageContent, not Message
+        // But Notification model expects 'message' field which references Message model
+        // We'll use a workaround: store the DirectMessageContent ID in a way that works
+        // Actually, let's check if we can use the conversation ID or create a special handling
+        
+        // Check if notification already exists (use conversation + sender to avoid duplicates)
+        const existingNotification = await Notification.findOne({
+          user: otherParticipantId,
+          type: 'dm',
+          fromUser: senderId,
+          read: false,
+          createdAt: { $gte: new Date(Date.now() - 60000) } // Within last minute
+        })
+        
+        if (!existingNotification) {
+          // Create a notification - we'll use conversation ID as a reference
+          // Note: The Notification model's 'message' field expects Message model, not DirectMessageContent
+          // We'll set it to null and use workspace/channel fields for context
+          const notification = new Notification({
+            user: otherParticipantId,
+            type: 'dm',
+            workspace: sharedWorkspaceId,
+            message: null, // DM messages use DirectMessageContent, not Message
+            fromUser: senderId
+          })
+          
+          await notification.save()
+          await notification.populate('fromUser', 'name email avatar')
+          if (sharedWorkspaceId) {
+            await notification.populate('workspace', 'name')
+          }
+          
+          // Emit notification via Socket.IO
+          const io = req.app.get('io')
+          if (io) {
+            const notificationObj = notification.toObject ? notification.toObject() : notification
+            const targetUserId = normalizeUserId(otherParticipantId)
+            
+            // CRITICAL: Ensure notification.user is a string ID for frontend matching
+            notificationObj.user = targetUserId
+            // Add DM-specific data
+            notificationObj.dmConversationId = conversation._id.toString()
+            notificationObj.dmMessageId = message._id.toString()
+            
+            if (notificationObj.fromUser && notificationObj.fromUser._id) {
+              notificationObj.fromUser = {
+                _id: normalizeUserId(senderId),
+                name: notificationObj.fromUser.name,
+                email: notificationObj.fromUser.email,
+                avatar: notificationObj.fromUser.avatar
+              }
+            } else {
+              notificationObj.fromUser = normalizeUserId(senderId)
+            }
+            
+            const roomName = `user:${targetUserId}`
+            io.to(roomName).emit('notification', notificationObj)
+            console.log(`📤 Emitting DM notification to room: ${roomName}`, {
+              notificationId: notificationObj._id?.toString() || notificationObj._id,
+              type: notificationObj.type,
+              targetUserId: targetUserId,
+              fromUserId: normalizeUserId(senderId),
+              dmConversationId: conversation._id.toString()
+            })
+            
+            // Also emit notification count update
+            const count = await Notification.countDocuments({
+              user: otherParticipantId,
+              read: false
+            })
+            io.to(roomName).emit('notification_count_updated', { count })
+            console.log(`✅ DM notification sent to user:${targetUserId}, count: ${count}`)
+          }
+        }
+      } catch (notifError) {
+        console.error('❌ Failed to create DM notification:', notifError)
+        // Don't fail the message send if notification creation fails
+      }
+    }
     
     // Broadcast via Socket.IO
     const io = req.app.get('io')

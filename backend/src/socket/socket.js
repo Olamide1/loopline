@@ -7,27 +7,111 @@ import jwt from 'jsonwebtoken'
 const onlineUsers = new Map() // workspaceId -> Set of userIds
 
 export const setupSocketIO = (io) => {
+  // Add connection error handler to log detailed errors
+  io.engine.on('connection_error', (err) => {
+    console.error('❌ Socket.IO engine connection error:', {
+      message: err.message,
+      description: err.description,
+      context: err.context,
+      type: err.type,
+      req: err.req ? {
+        url: err.req.url,
+        method: err.req.method,
+        headers: {
+          authorization: err.req.headers.authorization ? 'present' : 'missing',
+          origin: err.req.headers.origin,
+          referer: err.req.headers.referer
+        }
+      } : null
+    })
+  })
+  
+  // Add error handler for socket connection attempts
+  io.on('connection_error', (err) => {
+    console.error('❌ Socket.IO connection error (socket level):', {
+      message: err.message,
+      description: err.description,
+      type: err.type,
+      context: err.context,
+      req: err.req ? {
+        url: err.req.url,
+        auth: err.req.auth
+      } : null
+    })
+    // Ensure error message is properly formatted
+    if (err.message && !err.message.includes('Authentication error')) {
+      err.message = `Server error: ${err.message}`
+    }
+  })
+  
   io.use(async (socket, next) => {
+    const connectionId = socket.id || 'pending'
+    console.log(`🔐 Socket.IO authentication attempt - connection ID: ${connectionId}`)
+    
     try {
+      // Check MongoDB connection first
+      const mongoose = (await import('mongoose')).default
+      if (mongoose.connection.readyState !== 1) {
+        const errorMsg = `MongoDB not connected, readyState: ${mongoose.connection.readyState}`
+        console.error(`❌ Socket.IO auth (${connectionId}): ${errorMsg}`)
+        return next(new Error('Authentication error: Database not available'))
+      }
+      
       // Authentication middleware for Socket.IO
       // Verify JWT token from handshake.auth.token
-      const token = socket.handshake.auth.token
+      // Socket.IO v4+ passes auth in handshake.auth, but also check query for compatibility
+      let token = socket.handshake.auth?.token
+      
+      // Fallback: check query params (for older Socket.IO versions or manual connections)
+      if (!token) {
+        token = socket.handshake.query?.token
+      }
+      
+      // Fallback: check headers
+      if (!token) {
+        const authHeader = socket.handshake.headers?.authorization
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          token = authHeader.replace('Bearer ', '')
+        }
+      }
       
       if (!token) {
+        console.error(`❌ Socket.IO auth (${connectionId}): No token provided`, {
+          auth: socket.handshake.auth,
+          query: socket.handshake.query,
+          queryKeys: Object.keys(socket.handshake.query || {}),
+          headers: {
+            origin: socket.handshake.headers.origin,
+            referer: socket.handshake.headers.referer,
+            authorization: socket.handshake.headers.authorization ? 'present' : 'missing'
+          }
+        })
         return next(new Error('Authentication error: No token provided'))
+      }
+      
+      console.log(`🔑 Socket.IO auth (${connectionId}): Token found, length: ${token.length}`)
+      
+      // Verify JWT_SECRET is set
+      if (!process.env.JWT_SECRET) {
+        console.error(`❌ Socket.IO auth (${connectionId}): JWT_SECRET not configured`)
+        return next(new Error('Authentication error: Server configuration error'))
       }
       
       // Verify JWT token
       let decoded
       try {
         decoded = jwt.verify(token, process.env.JWT_SECRET)
+        console.log(`✅ Socket.IO auth (${connectionId}): Token verified, userId: ${decoded.userId}`)
       } catch (error) {
         if (error.name === 'JsonWebTokenError') {
+          console.error(`❌ Socket.IO auth (${connectionId}): Invalid token format - ${error.message}`)
           return next(new Error('Authentication error: Invalid token'))
         }
         if (error.name === 'TokenExpiredError') {
+          console.error(`❌ Socket.IO auth (${connectionId}): Token expired at ${error.expiredAt}`)
           return next(new Error('Authentication error: Token expired'))
         }
+        console.error(`❌ Socket.IO auth (${connectionId}): Token verification failed:`, error.message)
         return next(new Error('Authentication error: Token verification failed'))
       }
       
@@ -35,42 +119,69 @@ export const setupSocketIO = (io) => {
       const userId = decoded.userId
       
       if (!userId) {
+        console.error(`❌ Socket.IO auth (${connectionId}): No userId in token payload`, { decoded })
         return next(new Error('Authentication error: Invalid token payload'))
       }
       
       // Verify user exists in database
-      const user = await User.findById(userId).select('-password')
-      if (!user) {
-        return next(new Error('Authentication error: User not found'))
+      try {
+        const user = await User.findById(userId).select('-password').maxTimeMS(5000)
+        if (!user) {
+          console.error(`❌ Socket.IO auth (${connectionId}): User not found: ${userId}`)
+          return next(new Error('Authentication error: User not found'))
+        }
+        
+        // Attach verified user ID to socket (normalize to string for consistency)
+        socket.userId = userId.toString()
+        socket.user = user
+        
+        console.log(`✅ Socket.IO authentication successful (${connectionId}) for user: ${userId}`)
+        next()
+      } catch (dbError) {
+        console.error(`❌ Socket.IO auth (${connectionId}): Database error:`, {
+          message: dbError.message,
+          name: dbError.name,
+          code: dbError.code,
+          userId: userId
+        })
+        
+        // Check if it's a timeout or connection error
+        if (dbError.name === 'MongoServerSelectionError' || dbError.message?.includes('timeout')) {
+          return next(new Error('Authentication error: Database connection timeout'))
+        }
+        
+        return next(new Error('Authentication error: Database error'))
       }
-      
-      // Attach verified user ID to socket
-      socket.userId = userId
-      socket.user = user
-      
-      next()
-    } catch (error) {
-      console.error('Socket.IO authentication error:', error)
-      return next(new Error('Authentication error: ' + (error.message || 'Unknown error')))
-    }
+      } catch (error) {
+        console.error(`❌ Socket.IO authentication error (${connectionId}) - unexpected:`, {
+          message: error.message,
+          name: error.name,
+          stack: error.stack?.split('\n').slice(0, 5).join('\n') // First 5 lines of stack
+        })
+        // Provide more descriptive error message
+        const errorMsg = error.message || 'Unknown error'
+        return next(new Error(`Authentication error: ${errorMsg}`))
+      }
   })
   
   io.on('connection', async (socket) => {
-    console.log(`User connected: ${socket.userId}`)
+    console.log(`✅ User connected: ${socket.userId}`)
     
     // Update user status to online
     try {
       await User.findByIdAndUpdate(socket.userId, {
         status: 'online',
         lastSeen: new Date()
-      })
+      }).maxTimeMS(5000)
     } catch (error) {
-      console.error('Failed to update user status:', error)
+      console.error('❌ Failed to update user status:', error.message)
+      // Don't disconnect on status update failure
     }
     
-    // Join user's personal room for DMs and notifications
-    socket.join(`user:${socket.userId}`)
-    console.log(`User ${socket.userId} joined personal room`)
+    // Join user's personal room for DMs and notifications (ensure string format)
+    const userIdStr = socket.userId.toString()
+    socket.join(`user:${userIdStr}`)
+    console.log(`✅ User ${userIdStr} joined personal room: user:${userIdStr}`)
     
     // Join workspace rooms
     socket.on('join_workspace', async (workspaceId) => {
@@ -107,20 +218,31 @@ export const setupSocketIO = (io) => {
     // Join channel room
     socket.on('join_channel', async (channelId) => {
       try {
+        // Normalize channel ID to string for consistent room names
+        const normalizedChannelId = channelId ? String(channelId).trim() : null
+        if (!normalizedChannelId) {
+          console.error(`❌ join_channel: Invalid channel ID: ${channelId}`)
+          socket.emit('error', { message: 'Invalid channel ID' })
+          return
+        }
+        
         // Verify channel access
-        const channel = await Channel.findById(channelId)
+        const channel = await Channel.findById(normalizedChannelId).maxTimeMS(5000)
         if (!channel) {
+          console.error(`❌ join_channel: Channel not found: ${normalizedChannelId}`)
           socket.emit('error', { message: 'Channel not found' })
           return
         }
         
         // Check access (simplified - should verify user membership)
-        socket.join(`channel:${channelId}`)
-        console.log(`User ${socket.userId} joined channel ${channelId}`)
+        const roomName = `channel:${normalizedChannelId}`
+        socket.join(roomName)
+        console.log(`✅ User ${socket.userId} joined channel room: ${roomName}`)
         
-        socket.emit('joined_channel', { channelId })
+        socket.emit('joined_channel', { channelId: normalizedChannelId })
       } catch (error) {
-        socket.emit('error', { message: 'Failed to join channel' })
+        console.error(`❌ join_channel error for channel ${channelId}:`, error.message)
+        socket.emit('error', { message: 'Failed to join channel', error: error.message })
       }
     })
     
