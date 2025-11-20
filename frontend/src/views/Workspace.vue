@@ -387,20 +387,6 @@
           </p>
         </div>
         
-        <!-- Google Drive Status -->
-        <div style="margin-bottom: var(--space-5); padding: var(--space-4); background: var(--color-bg-alt); border-radius: var(--radius-sm); border: 2px solid var(--color-border);">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: var(--space-2);">
-            <span style="font-size: var(--text-sm); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--color-text-muted);">Google Drive</span>
-            <span 
-              :style="workspaceSettings.driveLinked 
-                ? 'background: var(--matisse-green); color: white; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 900; text-transform: uppercase;'
-                : 'background: var(--color-bg); color: var(--color-text-muted); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; border: 1px solid var(--color-border);'"
-            >
-              {{ workspaceSettings.driveLinked ? 'LINKED' : 'NOT LINKED' }}
-            </span>
-          </div>
-        </div>
-        
         <!-- Save Button -->
         <div style="display: flex; gap: var(--space-3);">
           <button 

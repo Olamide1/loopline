@@ -41,7 +41,7 @@
                 <div class="feature-icon">📁</div>
                 <h3 class="heading-3">Switch Tools Anytime</h3>
                 <p class="text-muted">
-                  Your files live in your Google Drive, not ours. Leave tomorrow and take everything with you. No export needed.
+                  Your data stays with you. Leave tomorrow and take everything with you. No export needed.
                 </p>
               </div>
             </div>
@@ -89,10 +89,9 @@
                   <li>Unlimited team members</li>
                   <li>Unlimited channels</li>
                   <li>Unlimited messages</li>
-                  <li>Google Drive integration</li>
                   <li>Webhook integrations</li>
                   <li>Message search</li>
-                  <li>File storage in your Drive</li>
+                  <li>File storage</li>
                 </ul>
                 <div style="margin-top: var(--space-6);">
                   <router-link to="/signup" class="btn" style="width: 100%;">Get Started</router-link>

@@ -55,13 +55,6 @@
               </button>
             </form>
             
-            <div style="margin-top: var(--space-5); text-align: center;">
-              <p class="text-muted" style="font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">or</p>
-              <button @click="handleGoogleLogin" class="btn btn-secondary" style="width: 100%; margin-top: var(--space-4);">
-                Sign up with Google
-              </button>
-            </div>
-            
             <p v-if="error" class="text-muted" style="margin-top: var(--space-4); color: var(--matisse-red); font-weight: 600;">
               {{ error }}
             </p>
@@ -123,10 +116,6 @@ const handleSignup = async () => {
   } else {
     error.value = result.error
   }
-}
-
-const handleGoogleLogin = () => {
-  authStore.loginWithGoogle()
 }
 </script>
 

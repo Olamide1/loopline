@@ -1,11 +1,10 @@
 # Loopline
 
-A team chat tool for small teams with Google Drive integration.
+A team chat tool for small teams.
 
 ## Features
 
 - Team chat with channels
-- Google Drive file storage
 - MongoDB message storage
 - Stripe and webhook integrations
 - Hosted and self-hosted options
@@ -33,7 +32,6 @@ loopline/
 
 - Node.js 20+
 - MongoDB (local or cloud)
-- Google Cloud Project with Drive API enabled
 - Stripe account (for integrations)
 
 ### Development Setup
@@ -61,9 +59,6 @@ NODE_ENV=development
 MONGODB_URI=mongodb://localhost:27017/loopline
 JWT_SECRET=your-secret-key-change-in-production
 JWT_EXPIRES_IN=7d
-GOOGLE_CLIENT_ID=your-google-client-id
-GOOGLE_CLIENT_SECRET=your-google-client-secret
-GOOGLE_REDIRECT_URI=http://localhost:3000/api/auth/google/callback
 STRIPE_SECRET_KEY=your-stripe-secret-key
 STRIPE_WEBHOOK_SECRET=your-stripe-webhook-secret
 FRONTEND_URL=http://localhost:5173
@@ -72,7 +67,6 @@ FRONTEND_URL=http://localhost:5173
 **frontend/.env:**
 ```env
 VITE_API_URL=http://localhost:3000
-VITE_GOOGLE_CLIENT_ID=your-google-client-id
 ```
 
 3. **Start MongoDB:**
@@ -140,21 +134,15 @@ loopline/
 ✅ Workspace management (create, invite, settings)
 ✅ Channel system (public/private, archive)
 ✅ Real-time messaging (Socket.IO)
-✅ Google Drive file storage
 ✅ Stripe webhook integration
 ✅ Generic webhook handler
 ✅ Search functionality
 ✅ Admin tools (exports, stats)
 ✅ Mobile-responsive design
-✅ Authentication (email + Google OAuth)
+✅ Authentication (email/password)
 
 ## Next Steps
 
-1. Complete Google OAuth flow implementation
-2. Add file preview functionality
-3. Implement message threads UI
-4. Add reactions UI
-5. Build admin dashboard
-6. Add retention policy automation
-7. Implement rules engine for integrations
+1. Add file preview functionality
+2. Implement rules engine for integrations
 

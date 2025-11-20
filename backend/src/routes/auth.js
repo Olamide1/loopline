@@ -183,12 +183,6 @@ router.post('/login', async (req, res) => {
   }
 })
 
-// Google OAuth callback
-router.get('/google/callback', async (req, res) => {
-  // This will be implemented with Google OAuth flow
-  res.json({ message: 'Google OAuth callback - to be implemented' })
-})
-
 // Get current user
 router.get('/me', authenticate, async (req, res) => {
   res.json({
