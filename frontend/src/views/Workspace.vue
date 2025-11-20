@@ -280,11 +280,11 @@
             <span v-if="channel.privacy === 'private'" style="font-size: var(--text-xs); flex-shrink: 0;" title="Private channel">🔒</span>
             <span style="font-weight: 600; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"># {{ channel.name }}</span>
             <span 
-              v-if="((channel.unreadCount || 0) > 0 || (threadNotifications[channel._id] || 0) > 0)" 
+              v-if="((channel.unreadCount || 0) > 0 || (threadNotifications[getChannelIdString(channel._id)] || 0) > 0)" 
               class="thread-notification-badge" 
               style="margin-left: auto;"
             >
-              {{ ((channel.unreadCount || 0) + (threadNotifications[channel._id] || 0)) > 99 ? '99+' : ((channel.unreadCount || 0) + (threadNotifications[channel._id] || 0)) }}
+              {{ getChannelBadgeCount(channel) > 99 ? '99+' : getChannelBadgeCount(channel) }}
             </span>
           </div>
         </div>
@@ -577,6 +577,10 @@ const error = ref('')
 const loading = ref(false)
 const unreadNotificationCount = ref(0)
 const threadNotifications = ref({}) // Map of channelId -> count
+
+// Track recently processed messages to prevent double-counting channel unread counts
+// Maps messageId -> timestamp when channel unread count was updated
+const processedMessagesForChannelCount = ref(new Map())
 const unreadDMCount = ref(0)
 const dmConversations = ref([])
 
@@ -743,6 +747,21 @@ const debouncedFetchDMConversations = () => {
     fetchDMConversations()
     fetchDMConversationsTimer.value = null
   }, 500) // 500ms debounce
+}
+
+// Helper function to normalize channel ID to string
+const getChannelIdString = (channelId) => {
+  if (!channelId) return null
+  return channelId?.toString() || channelId
+}
+
+// Helper function to get channel badge count (unread + thread notifications)
+const getChannelBadgeCount = (channel) => {
+  const channelIdStr = getChannelIdString(channel._id)
+  const unreadCount = channel.unreadCount || 0
+  const threadCount = threadNotifications.value[channelIdStr] || 0
+  const total = unreadCount + threadCount
+  return total
 }
 
 // Setup Socket.IO connection
@@ -1090,9 +1109,12 @@ const setupSocket = () => {
           console.log('✅ Updated thread notification count for channel:', channelId, 'old:', currentThreadCount, 'new:', currentThreadCount + 1)
           
           // Check if user is viewing this channel
-          const currentChannelIdStr = currentChannelId.value?.toString()
+          // CRITICAL: Normalize both IDs before comparison to match other notification handlers
+          const currentChannelIdStr = currentChannelId.value?.toString() || null
+          const normalizedCurrentChannelId = currentChannelIdStr ? String(currentChannelIdStr).trim() : null
+          const normalizedChannelId = channelId ? String(channelId).trim() : null
           const isViewingDM = route.name === 'DirectMessages' || route.name === 'DirectMessageChat'
-          const isViewingThisChannel = channelId === currentChannelIdStr && !isViewingDM
+          const isViewingThisChannel = normalizedChannelId === normalizedCurrentChannelId && !isViewingDM
           
           // Play notification sound if not viewing this channel
           if (!isViewingThisChannel) {
@@ -1105,8 +1127,107 @@ const setupSocket = () => {
           console.warn('⚠️ Thread notification received but channel ID is missing:', notification)
         }
       } else {
-        // For other notification types, always play sound when a new notification arrives
-        // (not just when count increases, because count might have been updated elsewhere)
+        // For other notification types (including channel message notifications)
+        // CRITICAL: Only update channel unread count if this is a channel notification
+        // The message_created handler also updates channel unread count, so we need to prevent double-counting
+        // We check if the message was already processed by message_created handler
+        if (notification.channel && notification.type === 'mention' && notification.message) {
+          // This is a channel message notification (using 'mention' type due to enum limitation)
+          const notificationChannelId = notification.channel?._id?.toString() || notification.channel?.toString() || notification.channel
+          const messageId = notification.message?._id?.toString() || notification.message?.toString() || notification.message
+          
+          if (notificationChannelId && messageId) {
+            // Check if this message was already processed by message_created handler
+            const wasProcessed = processedMessagesForChannelCount.value.has(messageId)
+            
+            if (!wasProcessed) {
+              // Check if we're currently viewing this channel
+              // CRITICAL: Normalize both IDs before comparison to match the channel lookup logic
+              const currentChannelIdStr = currentChannelId.value?.toString() || null
+              const normalizedCurrentChannelId = currentChannelIdStr ? String(currentChannelIdStr).trim() : null
+              const normalizedNotificationChannelId = notificationChannelId ? String(notificationChannelId).trim() : null
+              const isViewingDM = route.name === 'DirectMessages' || route.name === 'DirectMessageChat'
+              const isViewingThisChannel = normalizedNotificationChannelId === normalizedCurrentChannelId && !isViewingDM
+              
+              // Only update channel unread count if we're NOT viewing this channel
+              // (same logic as message_created handler)
+              if (!isViewingThisChannel) {
+                console.log('🔍 Looking for channel in list:', {
+                  notificationChannelId,
+                  availableChannels: channels.value.map(c => ({
+                    id: c._id?.toString() || c._id,
+                    name: c.name,
+                    currentUnread: c.unreadCount
+                  }))
+                })
+                
+                const channelIndex = channels.value.findIndex(c => {
+                  const channelId = c._id?.toString() || c._id
+                  const normalizedChannelId = channelId ? String(channelId).trim() : null
+                  const normalizedNotificationId = notificationChannelId ? String(notificationChannelId).trim() : null
+                  const matches = normalizedChannelId === normalizedNotificationId
+                  if (!matches && normalizedChannelId && normalizedNotificationId) {
+                    console.log('🔍 Channel ID mismatch:', {
+                      channelId: normalizedChannelId,
+                      notificationId: normalizedNotificationId,
+                      channelName: c.name
+                    })
+                  }
+                  return matches
+                })
+                
+                if (channelIndex >= 0) {
+                  const currentCount = channels.value[channelIndex].unreadCount || 0
+                  const newCount = currentCount + 1
+                  
+                  console.log('📊 Updating channel unread count:', {
+                    channelIndex,
+                    channelName: channels.value[channelIndex].name,
+                    oldCount: currentCount,
+                    newCount,
+                    channelId: notificationChannelId
+                  })
+                  
+                  // Create new array to trigger reactivity - CRITICAL for Vue 3
+                  const updatedChannels = [...channels.value]
+                  updatedChannels[channelIndex] = {
+                    ...updatedChannels[channelIndex],
+                    unreadCount: newCount
+                  }
+                  channels.value = updatedChannels
+                  
+                  // Verify the update worked
+                  console.log('✅ Verified update - channel unread count is now:', channels.value[channelIndex].unreadCount)
+                  
+                  // Mark message as processed to prevent double-counting
+                  processedMessagesForChannelCount.value.set(messageId, Date.now())
+                  
+                  // Clean up old entries (older than 5 minutes) to prevent memory leak
+                  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000
+                  for (const [msgId, timestamp] of processedMessagesForChannelCount.value.entries()) {
+                    if (timestamp < fiveMinutesAgo) {
+                      processedMessagesForChannelCount.value.delete(msgId)
+                    }
+                  }
+                  
+                  console.log('✅ Updated channel unread count from notification:', notificationChannelId, 'old:', currentCount, 'new:', newCount, 'messageId:', messageId)
+                } else {
+                  console.log('⚠️ Channel not found in list for notification, will refresh channels', {
+                    notificationChannelId,
+                    availableIds: channels.value.map(c => c._id?.toString() || c._id)
+                  })
+                  debouncedFetchChannels()
+                }
+              } else {
+                console.log('⏭️ Skipping channel unread count update in notification handler - viewing this channel')
+              }
+            } else {
+              console.log('⏭️ Skipping channel unread count update - message already processed by message_created handler:', messageId)
+            }
+          }
+        }
+        
+        // Always play sound when a new notification arrives
         shouldPlaySound = true
         soundReason = `notification (type: ${notification.type})`
       }
@@ -1188,9 +1309,12 @@ const setupSocket = () => {
       }
     }
     
+    // CRITICAL: Normalize both IDs before comparison to match the channel lookup logic
     const currentChannelIdStr = currentChannelId.value?.toString() || null
+    const normalizedCurrentChannelId = currentChannelIdStr ? String(currentChannelIdStr).trim() : null
+    const normalizedMessageChannelId = messageChannelId ? String(messageChannelId).trim() : null
     const isViewingDM = route.name === 'DirectMessages' || route.name === 'DirectMessageChat'
-    const isViewingThisChannel = messageChannelId === currentChannelIdStr && !isViewingDM
+    const isViewingThisChannel = normalizedMessageChannelId === normalizedCurrentChannelId && !isViewingDM
     
     console.log('🔍 Comparing channel IDs - message:', messageChannelId, 'current:', currentChannelIdStr)
     console.log('📊 Current channels:', channels.value.map(c => ({ id: c._id?.toString(), name: c.name, unread: c.unreadCount })))
@@ -1204,33 +1328,88 @@ const setupSocket = () => {
     
     // Update unread count for the channel if not currently viewing it
     if (!isViewingThisChannel) {
-      const index = channels.value.findIndex(c => {
-        const channelId = c._id?.toString() || c._id
-        return channelId === messageChannelId
-      })
+      const messageId = message._id?.toString() || message._id
       
-      if (index >= 0) {
-        // Increment unread count - use Vue's reactivity with proper array replacement
-        const currentCount = channels.value[index].unreadCount || 0
-        const newCount = currentCount + 1
+      // Check if this message was already processed by notification handler
+      const wasProcessed = messageId && processedMessagesForChannelCount.value.has(messageId)
+      
+      if (!wasProcessed) {
+        console.log('🔍 Looking for channel in message_created handler:', {
+          messageChannelId,
+          availableChannels: channels.value.map(c => ({
+            id: c._id?.toString() || c._id,
+            name: c.name,
+            currentUnread: c.unreadCount
+          }))
+        })
         
-        // Create new array to trigger reactivity
-        const updatedChannels = [...channels.value]
-        updatedChannels[index] = {
-          ...updatedChannels[index],
-          unreadCount: newCount
+        const index = channels.value.findIndex(c => {
+          const channelId = c._id?.toString() || c._id
+          const normalizedChannelId = channelId ? String(channelId).trim() : null
+          const normalizedMessageId = messageChannelId ? String(messageChannelId).trim() : null
+          const matches = normalizedChannelId === normalizedMessageId
+          if (!matches && normalizedChannelId && normalizedMessageId) {
+            console.log('🔍 Channel ID mismatch in message_created:', {
+              channelId: normalizedChannelId,
+              messageId: normalizedMessageId,
+              channelName: c.name
+            })
+          }
+          return matches
+        })
+        
+        if (index >= 0) {
+          // Increment unread count - use Vue's reactivity with proper array replacement
+          const currentCount = channels.value[index].unreadCount || 0
+          const newCount = currentCount + 1
+          
+          console.log('📊 Updating channel unread count from message_created:', {
+            channelIndex: index,
+            channelName: channels.value[index].name,
+            oldCount: currentCount,
+            newCount,
+            channelId: messageChannelId
+          })
+          
+          // Create new array to trigger reactivity
+          const updatedChannels = [...channels.value]
+          updatedChannels[index] = {
+            ...updatedChannels[index],
+            unreadCount: newCount
+          }
+          channels.value = updatedChannels
+          
+          // Verify the update worked
+          console.log('✅ Verified update - channel unread count is now:', channels.value[index].unreadCount)
+          
+          // Mark message as processed to prevent double-counting
+          if (messageId) {
+            processedMessagesForChannelCount.value.set(messageId, Date.now())
+            
+            // Clean up old entries (older than 5 minutes) to prevent memory leak
+            const fiveMinutesAgo = Date.now() - 5 * 60 * 1000
+            for (const [msgId, timestamp] of processedMessagesForChannelCount.value.entries()) {
+              if (timestamp < fiveMinutesAgo) {
+                processedMessagesForChannelCount.value.delete(msgId)
+              }
+            }
+          }
+          
+          console.log('✅ Updated unread count for channel:', messageChannelId, 'old:', currentCount, 'new:', newCount, 'messageId:', messageId)
+          
+          // Play notification sound for new message in channel
+          console.log('🔔 Playing sound for new channel message')
+          playNotificationSound()
+        } else {
+          // Channel not in list, debounce refresh to prevent rate limiting
+          console.log('⚠️ Channel not in list, will refresh channels', {
+            messageChannelId,
+            availableIds: channels.value.map(c => c._id?.toString() || c._id)
+          })
+          debouncedFetchChannels()
         }
-        channels.value = updatedChannels
-        
-        console.log('✅ Updated unread count for channel:', messageChannelId, 'old:', currentCount, 'new:', newCount)
-        
-        // Play notification sound for new message in channel
-        console.log('🔔 Playing sound for new channel message')
-        playNotificationSound()
       } else {
-        // Channel not in list, debounce refresh to prevent rate limiting
-        console.log('⚠️ Channel not in list, will refresh channels')
-        debouncedFetchChannels()
+        console.log('⏭️ Skipping channel unread count update - message already processed by notification handler:', messageId)
       }
     } else {
       // User is viewing this channel, ensure unread count is 0

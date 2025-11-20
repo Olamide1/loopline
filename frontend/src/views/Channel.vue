@@ -690,18 +690,53 @@ const sendThreadReply = async (parentMessage) => {
       }
     })
     
-    console.log('✅ Thread reply sent:', response.data)
+    console.log('✅ Thread reply sent via API:', response.data)
     
-    // Add to thread replies
-    if (!threadReplies.value[parentMessage._id]) {
-      threadReplies.value[parentMessage._id] = []
+    // CRITICAL: Normalize parent ID to string (with trim) to match socket handler normalization
+    // This ensures both code paths use the same key format in threadReplies object
+    const parentIdRaw = parentMessage._id?.toString() || parentMessage._id
+    const parentId = parentIdRaw ? String(parentIdRaw).trim() : null
+    
+    if (!parentId) {
+      console.error('❌ Parent message ID is missing')
+      return
     }
-    threadReplies.value[parentMessage._id].push(response.data)
     
-    // Update thread count
-    const parent = messages.value.find(m => m._id === parentMessage._id)
-    if (parent) {
-      parent.threadCount = (parent.threadCount || 0) + 1
+    // CRITICAL: Check if reply already exists before adding (socket event might have already added it)
+    if (!threadReplies.value[parentId]) {
+      threadReplies.value[parentId] = []
+    }
+    
+    const replyId = response.data._id?.toString() || response.data._id
+    const existingReply = threadReplies.value[parentId].find(r => {
+      const rId = r._id?.toString() || r._id
+      return rId === replyId
+    })
+    
+    if (!existingReply) {
+      threadReplies.value[parentId].push(response.data)
+      console.log('✅ Added own thread reply optimistically')
+      
+      // Update thread count - normalize both sides for reliable comparison
+      const parent = messages.value.find(m => {
+        const mId = m._id?.toString() || m._id
+        const normalizedMId = mId ? String(mId).trim() : null
+        return normalizedMId === parentId
+      })
+      if (parent) {
+        parent.threadCount = (parent.threadCount || 0) + 1
+      }
+    } else {
+      console.log('⏭️ Thread reply already exists (from socket), skipping duplicate')
+      // Still update thread count if needed (socket might have already done it)
+      const parent = messages.value.find(m => {
+        const mId = m._id?.toString() || m._id
+        const normalizedMId = mId ? String(mId).trim() : null
+        return normalizedMId === parentId
+      })
+      if (parent && !parent.threadCount) {
+        parent.threadCount = threadReplies.value[parentId].length
+      }
     }
     
     // Clear input
@@ -1014,19 +1049,52 @@ const setupSocket = () => {
   })
   
   socket.value.on('thread_reply_created', (reply) => {
+    console.log('📨 Thread reply created event received:', reply)
+    
     // Add thread reply to the appropriate thread
-    const parentId = reply.threadParent?._id || reply.threadParent
-    if (parentId && threadReplies.value[parentId]) {
-      // Check if reply already exists
-      if (!threadReplies.value[parentId].find(r => r._id === reply._id)) {
+    // CRITICAL: Normalize parentId to string for consistent comparison and object key usage
+    const parentIdRaw = reply.threadParent?._id || reply.threadParent
+    const parentId = parentIdRaw ? String(parentIdRaw).trim() : null
+    
+    if (parentId) {
+      // Initialize array if it doesn't exist
+      if (!threadReplies.value[parentId]) {
+        threadReplies.value[parentId] = []
+      }
+      
+      // Check if reply already exists to prevent duplicates
+      const replyId = reply._id?.toString() || reply._id
+      const existingReply = threadReplies.value[parentId].find(r => {
+        const rId = r._id?.toString() || r._id
+        return rId === replyId
+      })
+      
+      if (!existingReply) {
         threadReplies.value[parentId].push(reply)
+        console.log('✅ Added thread reply from socket:', replyId, 'to parent:', parentId)
         
         // Update thread count on parent message
-        const parent = messages.value.find(m => m._id === parentId)
+        // CRITICAL: Normalize both sides of comparison to strings for reliable equality
+        const parent = messages.value.find(m => {
+          const mId = m._id?.toString() || m._id
+          const normalizedMId = mId ? String(mId).trim() : null
+          const normalizedParentId = parentId ? String(parentId).trim() : null
+          return normalizedMId === normalizedParentId
+        })
         if (parent) {
           parent.threadCount = (parent.threadCount || 0) + 1
+          console.log('✅ Updated thread count for parent:', parentId, 'new count:', parent.threadCount)
+        } else {
+          console.warn('⚠️ Parent message not found for thread reply:', {
+            parentId,
+            availableMessageIds: messages.value.map(m => m._id?.toString() || m._id)
+          })
         }
+      } else {
+        console.log('⏭️ Thread reply already exists, skipping duplicate:', replyId)
       }
+    } else {
+      console.warn('⚠️ Thread reply received but parent ID is missing:', reply)
     }
   })
   
