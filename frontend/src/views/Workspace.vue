@@ -1117,10 +1117,22 @@ const setupSocket = () => {
         // CRITICAL: Only update channel unread count if this is a channel notification
         // The message_created handler also updates channel unread count, so we need to prevent double-counting
         // We check if the message was already processed by message_created handler
-        if (notification.channel && notification.type === 'mention' && notification.message) {
+        // NOTE: notification.message can be an ObjectId string or object - both are valid
+        // NOTE: notification.channel can be an object with _id or a string ID
+        const hasChannel = notification.channel || notification.channelId
+        const hasMessage = notification.message || notification.messageId
+        if (hasChannel && notification.type === 'mention' && hasMessage) {
           // This is a channel message notification (using 'mention' type due to enum limitation)
-          const notificationChannelId = notification.channel?._id?.toString() || notification.channel?.toString() || notification.channel
-          const messageId = notification.message?._id?.toString() || notification.message?.toString() || notification.message
+          // Handle channel ID - can be object with _id, string ID, or channelId field
+          const notificationChannelId = notification.channelId ||
+                                        (notification.channel?._id?.toString()) ||
+                                        (notification.channel?.toString()) ||
+                                        notification.channel
+          // Handle message field - can be ObjectId string, object with _id, or messageId field
+          const messageId = notification.messageId || 
+                           (notification.message?._id?.toString()) || 
+                           (notification.message?.toString()) || 
+                           notification.message
           
           if (notificationChannelId && messageId) {
             // Check if this message was already processed by message_created handler
@@ -1903,7 +1915,10 @@ watch(() => route.params.channelId, async (newChannelId) => {
   if (newChannelId) {
     currentChannelId.value = newChannelId
     
-    // Reset unread count for the channel being viewed
+    // Optimistically reset unread count when navigating to channel (immediate UI feedback)
+    // This provides a fallback if the API call to mark channel as read fails
+    // The channel_read socket event will also reset it (backend confirmation), but this ensures
+    // the badge clears even if the API call fails silently
     const index = channels.value.findIndex(c => {
       const cId = c._id?.toString() || c._id
       return cId === newChannelId?.toString()
@@ -1915,6 +1930,7 @@ watch(() => route.params.channelId, async (newChannelId) => {
         unreadCount: 0
       }
       channels.value = updatedChannels
+      console.log('✅ Optimistically reset unread count for channel:', newChannelId)
     }
     
     // Clear thread notifications for this channel

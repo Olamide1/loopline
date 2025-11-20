@@ -684,6 +684,29 @@ export const createChannelMessageNotification = async (message, channel, workspa
               const socketsInRoom = await io.in(roomName).fetchSockets()
               console.log(`📡 Room ${roomName} has ${socketsInRoom.length} socket(s)`)
               
+              // CRITICAL: Ensure message field is included (as ObjectId string) for frontend badge update logic
+              if (!notificationObj.message) {
+                notificationObj.message = message._id.toString()
+              } else if (notificationObj.message && typeof notificationObj.message === 'object' && notificationObj.message._id) {
+                notificationObj.message = notificationObj.message._id.toString()
+              } else if (notificationObj.message && typeof notificationObj.message.toString === 'function') {
+                notificationObj.message = notificationObj.message.toString()
+              }
+              
+              // CRITICAL: Ensure channelId field is explicitly included for frontend badge update logic
+              // Handle both populated channel object and string ID
+              if (!notificationObj.channelId) {
+                if (notificationObj.channel && typeof notificationObj.channel === 'object' && notificationObj.channel._id) {
+                  notificationObj.channelId = notificationObj.channel._id.toString()
+                } else if (notificationObj.channel && typeof notificationObj.channel.toString === 'function') {
+                  notificationObj.channelId = notificationObj.channel.toString()
+                } else if (notificationObj.channel) {
+                  notificationObj.channelId = String(notificationObj.channel)
+                } else {
+                  notificationObj.channelId = channelId
+                }
+              }
+              
               io.to(roomName).emit('notification', notificationObj)
               console.log(`📤 Emitting channel message notification to room: ${roomName}`, {
                 notificationId: notificationObj._id?.toString() || notificationObj._id,
@@ -691,6 +714,7 @@ export const createChannelMessageNotification = async (message, channel, workspa
                 targetUserId: recipientStr,
                 fromUserId: normalizedSenderId,
                 channelId: channelId,
+                messageId: notificationObj.message,
                 socketsInRoom: socketsInRoom.length
               })
               
