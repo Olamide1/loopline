@@ -1413,9 +1413,12 @@ const setupSocket = () => {
       }
     } else {
       // User is viewing this channel, ensure unread count is 0
+      // CRITICAL: Normalize both IDs before comparison to match other channel lookups in this handler
       const index = channels.value.findIndex(c => {
         const channelId = c._id?.toString() || c._id
-        return channelId === messageChannelId
+        const normalizedChannelId = channelId ? String(channelId).trim() : null
+        const normalizedMessageId = messageChannelId ? String(messageChannelId).trim() : null
+        return normalizedChannelId === normalizedMessageId
       })
       if (index >= 0) {
         const currentCount = channels.value[index].unreadCount || 0
