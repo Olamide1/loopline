@@ -446,9 +446,16 @@ watch(() => route.params.conversationId, async (newId) => {
   word-break: break-all;
 }
 
-.dm-message-item.is-sent .dm-message-link {
-  color: rgba(255, 255, 255, 0.9);
-  text-decoration: underline;
+.dm-message-item.is-sent .dm-message-text a:link,
+.dm-message-item.is-sent .dm-message-text a:visited,
+.dm-message-item.is-sent .dm-message-text a:hover,
+.dm-message-item.is-sent .dm-message-text a:active,
+.dm-message-item.is-sent .dm-message-text a.dm-message-link:link,
+.dm-message-item.is-sent .dm-message-text a.dm-message-link:visited,
+.dm-message-item.is-sent .dm-message-text a.dm-message-link:hover,
+.dm-message-item.is-sent .dm-message-text a.dm-message-link:active {
+  color: white !important;
+  text-decoration: underline !important;
 }
 
 .dm-input-container {

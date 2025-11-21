@@ -2325,9 +2325,28 @@ const formatTime = (date) => {
   word-break: break-all;
 }
 
-.message-content.own-message-content .message-link {
-  color: rgba(255, 255, 255, 0.9);
-  text-decoration: underline;
+.message-content.own-message-content .message-text a:link,
+.message-content.own-message-content .message-text a:visited,
+.message-content.own-message-content .message-text a:hover,
+.message-content.own-message-content .message-text a:active,
+.message-content.own-message-content .message-text a.message-link:link,
+.message-content.own-message-content .message-text a.message-link:visited,
+.message-content.own-message-content .message-text a.message-link:hover,
+.message-content.own-message-content .message-text a.message-link:active {
+  color: white !important;
+  text-decoration: underline !important;
+}
+
+.message-content.own-message-content .thread-reply-text a:link,
+.message-content.own-message-content .thread-reply-text a:visited,
+.message-content.own-message-content .thread-reply-text a:hover,
+.message-content.own-message-content .thread-reply-text a:active,
+.message-content.own-message-content .thread-reply-text a.message-link:link,
+.message-content.own-message-content .thread-reply-text a.message-link:visited,
+.message-content.own-message-content .thread-reply-text a.message-link:hover,
+.message-content.own-message-content .thread-reply-text a.message-link:active {
+  color: white !important;
+  text-decoration: underline !important;
 }
 
 .mention-autocomplete {
