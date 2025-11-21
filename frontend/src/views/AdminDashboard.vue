@@ -53,6 +53,10 @@
             <span class="action-icon">⚙️</span>
             <span class="action-label">Workspace Settings</span>
           </button>
+          <button @click="goToIntegrations" class="action-btn card">
+            <span class="action-icon">🔌</span>
+            <span class="action-label">Webhook Integrations</span>
+          </button>
         </div>
       </div>
     </div>
@@ -162,6 +166,10 @@ const exportFiles = async () => {
 
 const goToSettings = () => {
   router.push(`/workspace/${workspaceId}`)
+}
+
+const goToIntegrations = () => {
+  router.push(`/workspace/${workspaceId}/integrations`)
 }
 
 const goToWorkspace = () => {

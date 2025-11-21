@@ -51,6 +51,12 @@ const routes = [
         meta: { requiresAuth: true }
       },
       {
+        path: 'integrations',
+        name: 'Integrations',
+        component: () => import('../views/Integrations.vue'),
+        meta: { requiresAuth: true }
+      },
+      {
         path: 'dm',
         name: 'DirectMessages',
         component: () => import('../views/DirectMessages.vue'),
