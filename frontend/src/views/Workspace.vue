@@ -956,6 +956,19 @@ const setupSocket = () => {
     console.log('✅ Channel read event received:', data)
     // Update unread count for channel
     const channelIdStr = data.channelId?.toString() || data.channelId
+    
+    // CRITICAL: Only reset unread count if this is the channel the user is currently viewing
+    // This prevents clearing unread counts for other channels when messages arrive
+    const currentChannelIdStr = currentChannelId.value?.toString() || null
+    const normalizedCurrentChannelId = currentChannelIdStr ? String(currentChannelIdStr).trim() : null
+    const normalizedReadChannelId = channelIdStr ? String(channelIdStr).trim() : null
+    
+    // Only process if this is the current channel being viewed
+    if (normalizedReadChannelId !== normalizedCurrentChannelId) {
+      console.log('⏭️ Skipping channel_read event - not for current channel. Read channel:', normalizedReadChannelId, 'Current:', normalizedCurrentChannelId)
+      return
+    }
+    
     const index = channels.value.findIndex(c => {
       const cId = c._id?.toString() || c._id
       return cId === channelIdStr
@@ -998,6 +1011,9 @@ const setupSocket = () => {
       user: notification.user,
       fromUser: notification.fromUser,
       channel: notification.channel,
+      channelId: notification.channelId,
+      message: notification.message,
+      messageId: notification.messageId,
       read: notification.read,
       fullNotification: notification
     })
@@ -1121,6 +1137,18 @@ const setupSocket = () => {
         // NOTE: notification.channel can be an object with _id or a string ID
         const hasChannel = notification.channel || notification.channelId
         const hasMessage = notification.message || notification.messageId
+        
+        console.log('🔍 Checking channel notification conditions:', {
+          hasChannel,
+          hasMessage,
+          type: notification.type,
+          channel: notification.channel,
+          channelId: notification.channelId,
+          message: notification.message,
+          messageId: notification.messageId,
+          typeMatches: notification.type === 'mention'
+        })
+        
         if (hasChannel && notification.type === 'mention' && hasMessage) {
           // This is a channel message notification (using 'mention' type due to enum limitation)
           // Handle channel ID - can be object with _id, string ID, or channelId field
@@ -1757,11 +1785,31 @@ const fetchChannels = async () => {
     console.log('✅ Channels fetched:', response.data)
     const fetchedChannels = response.data || []
     
-    // Ensure unreadCount is always a number
-    channels.value = fetchedChannels.map(ch => ({
-      ...ch,
-      unreadCount: typeof ch.unreadCount === 'number' ? ch.unreadCount : 0
-    }))
+    // CRITICAL: Preserve existing unread counts from real-time updates when merging with fetched data
+    // This prevents overwriting unread counts that were set by notification handlers
+    const existingUnreadCounts = new Map()
+    channels.value.forEach(ch => {
+      const chId = ch._id?.toString() || ch._id
+      if (chId && ch.unreadCount > 0) {
+        existingUnreadCounts.set(chId, ch.unreadCount)
+      }
+    })
+    
+    // Merge fetched channels with existing unread counts
+    // Use the higher value between backend and real-time updates to prevent losing notifications
+    channels.value = fetchedChannels.map(ch => {
+      const chId = ch._id?.toString() || ch._id
+      const backendUnreadCount = typeof ch.unreadCount === 'number' ? ch.unreadCount : 0
+      const existingUnreadCount = existingUnreadCounts.get(chId) || 0
+      
+      // Use the maximum to preserve real-time updates that might not be in backend yet
+      const finalUnreadCount = Math.max(backendUnreadCount, existingUnreadCount)
+      
+      return {
+        ...ch,
+        unreadCount: finalUnreadCount
+      }
+    })
     
     if (!Array.isArray(channels.value)) {
       console.error('❌ Invalid channels data:', channels.value)
@@ -1915,23 +1963,10 @@ watch(() => route.params.channelId, async (newChannelId) => {
   if (newChannelId) {
     currentChannelId.value = newChannelId
     
-    // Optimistically reset unread count when navigating to channel (immediate UI feedback)
-    // This provides a fallback if the API call to mark channel as read fails
-    // The channel_read socket event will also reset it (backend confirmation), but this ensures
-    // the badge clears even if the API call fails silently
-    const index = channels.value.findIndex(c => {
-      const cId = c._id?.toString() || c._id
-      return cId === newChannelId?.toString()
-    })
-    if (index >= 0 && channels.value[index].unreadCount > 0) {
-      const updatedChannels = [...channels.value]
-      updatedChannels[index] = {
-        ...updatedChannels[index],
-        unreadCount: 0
-      }
-      channels.value = updatedChannels
-      console.log('✅ Optimistically reset unread count for channel:', newChannelId)
-    }
+    // NOTE: Do NOT optimistically reset unread count here - this causes notifications to disappear
+    // before the user has actually read the messages. The unread count will be cleared by:
+    // 1. The channel_read socket event (triggered after markChannelAsRead() is called in Channel.vue)
+    // 2. This happens after messages are loaded and the user has scrolled to see them
     
     // Clear thread notifications for this channel
     if (threadNotifications.value[newChannelId]) {
