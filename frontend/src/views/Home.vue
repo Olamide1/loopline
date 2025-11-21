@@ -15,18 +15,47 @@
     <main class="home-main">
       <section class="hero">
         <div class="container">
-          <div class="grid">
-            <div class="grid-item-8" style="margin: 0 auto;">
-              <div class="hero-content cutout cutout-accent-1 bauhaus-circle bauhaus-primary-stripe">
-                <h1 class="heading-1">Team chat that doesn't trap your files</h1>
-                <p class="hero-text">
-                  Stop paying per person. Stop losing files when you switch tools. 
-                  Chat with your team, keep everything in your Drive, and leave whenever you want.
+          <div class="hero-wrapper">
+            <div class="hero-content cutout cutout-accent-1 bauhaus-circle bauhaus-primary-stripe">
+              <h1 class="heading-1">Simple team chat for small teams</h1>
+              <p class="hero-text">
+                Built for indie teams, agencies, and small engineering groups who want simple chat without the lock-in. 
+                Stop paying per person. Export your messages anytime. No vendor lock-in, no complexity.
+              </p>
+              <div class="hero-actions">
+                <router-link to="/signup" class="btn">Start Free</router-link>
+                <router-link to="/login" class="btn btn-secondary">Login</router-link>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="use-cases">
+        <div class="container">
+          <div class="use-cases-wrapper">
+            <h2 class="heading-2" style="text-align: center; margin-bottom: var(--space-6);">Perfect for teams who value freedom</h2>
+            <div class="use-cases-grid">
+              <div class="use-case-card card">
+                <div class="use-case-icon">👨‍💻</div>
+                <h3 class="heading-3">Indie Developers</h3>
+                <p class="text-muted">
+                  Small teams building products. Keep all your project discussions in one place without breaking the bank.
                 </p>
-                <div class="hero-actions">
-                  <router-link to="/signup" class="btn">Start Free</router-link>
-                  <router-link to="/login" class="btn btn-secondary">Login</router-link>
-                </div>
+              </div>
+              <div class="use-case-card card">
+                <div class="use-case-icon">🎨</div>
+                <h3 class="heading-3">Creative Agencies</h3>
+                <p class="text-muted">
+                  Client work and team coordination. Keep everything organized in channels without the enterprise complexity.
+                </p>
+              </div>
+              <div class="use-case-card card">
+                <div class="use-case-icon">⚙️</div>
+                <h3 class="heading-3">Engineering Teams</h3>
+                <p class="text-muted">
+                  Technical discussions and code reviews. Integrate with your tools via webhooks and keep everything searchable.
+                </p>
               </div>
             </div>
           </div>
@@ -35,32 +64,34 @@
 
       <section class="features">
         <div class="container">
-          <div class="grid">
-            <div class="grid-item-4">
-              <div class="feature-card card cutout cutout-accent-2 bauhaus-rect card-bauhaus-blue">
-                <div class="feature-icon">📁</div>
-                <h3 class="heading-3">Switch Tools Anytime</h3>
-                <p class="text-muted">
-                  Your data stays with you. Leave tomorrow and take everything with you. No export needed.
-                </p>
+          <div class="features-wrapper">
+            <div class="grid">
+              <div class="grid-item-4">
+                <div class="feature-card card cutout cutout-accent-2 bauhaus-rect card-bauhaus-blue">
+                  <div class="feature-icon">📁</div>
+                  <h3 class="heading-3">Switch Tools Anytime</h3>
+                  <p class="text-muted">
+                    Your messages are exportable. Leave tomorrow and take your conversation history with you. No lock-in.
+                  </p>
+                </div>
               </div>
-            </div>
-            <div class="grid-item-4">
-              <div class="feature-card card cutout cutout-accent-3 bauhaus-triangle card-bauhaus-yellow">
-                <div class="feature-icon">💰</div>
-                <h3 class="heading-3">Budget Without Surprises</h3>
-                <p class="text-muted">
-                  One price per workspace, no matter how many people join. Add 5 or 50—your bill stays the same.
-                </p>
+              <div class="grid-item-4">
+                <div class="feature-card card cutout cutout-accent-3 bauhaus-triangle card-bauhaus-yellow">
+                  <div class="feature-icon">💰</div>
+                  <h3 class="heading-3">Budget Without Surprises</h3>
+                  <p class="text-muted">
+                    One price per workspace, no matter how many people join. Add 5 or 50—your bill stays the same.
+                  </p>
+                </div>
               </div>
-            </div>
-            <div class="grid-item-4">
-              <div class="feature-card card cutout cutout-accent-4 cutout-organic card-bauhaus-red">
-                <div class="feature-icon">🔌</div>
-                <h3 class="heading-3">One Place for Everything</h3>
-                <p class="text-muted">
-                  Stripe payments, GitHub commits, deploy alerts—all in channels, not buried in email.
-                </p>
+              <div class="grid-item-4">
+                <div class="feature-card card cutout cutout-accent-4 cutout-organic card-bauhaus-red">
+                  <div class="feature-icon">🔌</div>
+                  <h3 class="heading-3">One Place for Everything</h3>
+                  <p class="text-muted">
+                    Stripe payments and webhook integrations—all in channels, not buried in email. Connect your tools.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -91,7 +122,7 @@
                   <li>Unlimited messages</li>
                   <li>Webhook integrations</li>
                   <li>Message search</li>
-                  <li>File storage</li>
+                  <li>File uploads</li>
                 </ul>
                 <div style="margin-top: var(--space-6);">
                   <router-link to="/signup" class="btn" style="width: 100%;">Get Started</router-link>
@@ -127,17 +158,15 @@
 
       <section class="cta">
         <div class="container">
-          <div class="grid">
-            <div class="grid-item-8" style="margin: 0 auto;">
-              <div class="cta-card card cutout cutout-accent-1 bauhaus-circle">
-                <h2 class="heading-2">$15/month for your whole team. No per-seat nonsense.</h2>
-                <p class="text-muted" style="margin-top: var(--space-3);">
-                  Built for indie teams, agencies, and small engineering groups who want simple chat without the lock-in. 
-                  Try it free, no credit card needed.
-                </p>
-                <div style="margin-top: var(--space-5);">
-                  <router-link to="/signup" class="btn btn-accent">Get Started Free</router-link>
-                </div>
+          <div class="cta-wrapper">
+            <div class="cta-card card cutout cutout-accent-1 bauhaus-circle">
+              <h2 class="heading-2">$15/month for your whole team. No per-seat nonsense.</h2>
+              <p class="text-muted" style="margin-top: var(--space-3);">
+                That's $3/person for a 5-person team. Compare to $6.67/person on Slack. 
+                Try it free, no credit card needed. Cancel anytime.
+              </p>
+              <div style="margin-top: var(--space-5);">
+                <router-link to="/signup" class="btn btn-accent">Get Started Free</router-link>
               </div>
             </div>
           </div>
@@ -257,6 +286,11 @@
   z-index: 0;
 }
 
+.hero-wrapper {
+  max-width: 800px;
+  margin: 0 auto;
+}
+
 .hero-content {
   text-align: center;
   padding: var(--space-7);
@@ -278,8 +312,44 @@
   margin-top: var(--space-6);
 }
 
+.use-cases {
+  padding: var(--space-8) 0;
+  background: var(--color-bg);
+}
+
+.use-cases-wrapper {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.use-cases-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-5);
+}
+
+.use-case-card {
+  text-align: center;
+  padding: var(--space-6);
+}
+
+.use-case-icon {
+  font-size: 48px;
+  margin-bottom: var(--space-4);
+}
+
+.use-case-card h3 {
+  margin-bottom: var(--space-3);
+}
+
 .features {
   padding: var(--space-8) 0;
+  background: var(--color-bg-alt);
+}
+
+.features-wrapper {
+  max-width: 1000px;
+  margin: 0 auto;
 }
 
 .pricing {
@@ -366,7 +436,12 @@
 
 .cta {
   padding: var(--space-8) 0;
-  background: var(--color-bg-alt);
+  background: var(--color-bg);
+}
+
+.cta-wrapper {
+  max-width: 800px;
+  margin: 0 auto;
 }
 
 .cta-card {
@@ -444,6 +519,19 @@
   }
   
   .pricing-card {
+    margin-bottom: var(--space-4);
+  }
+  
+  .use-cases {
+    padding: var(--space-6) 0;
+  }
+  
+  .use-cases-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+  
+  .use-case-card {
     margin-bottom: var(--space-4);
   }
   
