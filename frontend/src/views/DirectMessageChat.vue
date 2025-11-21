@@ -33,7 +33,16 @@
             <span class="dm-message-time">{{ formatTime(message.createdAt) }}</span>
             <span v-if="message.read && isSentByMe(message)" class="dm-read-indicator">✓✓</span>
           </div>
-          <div class="dm-message-text">{{ message.text }}</div>
+          <div class="dm-message-text" v-html="formatMessageText(message)"></div>
+          <!-- URL Preview -->
+          <div v-if="getFirstUrl(message.text)" class="url-preview-card" @click.stop>
+            <a :href="getFirstUrl(message.text)" target="_blank" rel="noopener noreferrer" class="url-preview-link">
+              <div class="url-preview-content">
+                <div class="url-preview-title" :title="getFirstUrl(message.text)">{{ truncateUrl(getFirstUrl(message.text), 50) }}</div>
+                <div class="url-preview-domain">{{ getUrlDomain(getFirstUrl(message.text)) }}</div>
+              </div>
+            </a>
+          </div>
         </div>
       </div>
     </div>
@@ -163,6 +172,72 @@ const formatTime = (date) => {
   } catch (e) {
     return ''
   }
+}
+
+const cleanTrailingPunctuation = (url) => {
+  if (!url) return url
+  // Remove trailing punctuation that's not part of the URL
+  // Common punctuation: . , ! ? ; : ) ] }
+  // But preserve punctuation that's part of URLs (like /, ?, &, = in query strings)
+  // Only remove trailing punctuation at the very end
+  return url.replace(/[.,!?;:)\]}]+$/, '')
+}
+
+const getFirstUrl = (text) => {
+  if (!text) return null
+  const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s]*)/i
+  const match = text.match(urlRegex)
+  if (!match) return null
+  let url = cleanTrailingPunctuation(match[0])
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url
+  }
+  return url
+}
+
+const getUrlDomain = (url) => {
+  if (!url) return ''
+  try {
+    const urlObj = new URL(url)
+    return urlObj.hostname.replace('www.', '')
+  } catch (e) {
+    return url
+  }
+}
+
+const truncateUrl = (url, maxLength) => {
+  if (!url) return ''
+  if (url.length <= maxLength) return url
+  return url.substring(0, maxLength) + '...'
+}
+
+const formatMessageText = (message) => {
+  if (!message.text) return ''
+  
+  // Escape HTML first to prevent XSS
+  const div = document.createElement('div')
+  div.textContent = message.text
+  let escaped = div.innerHTML
+  
+  // URL regex pattern - matches http, https, www, and common domains
+  const urlRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}[^\s]*)/gi
+  
+  // Extract URLs and replace with clickable links
+  escaped = escaped.replace(urlRegex, (url) => {
+    // Clean trailing punctuation from URL
+    const cleanedUrl = cleanTrailingPunctuation(url)
+    // Add protocol if missing
+    let href = cleanedUrl
+    if (!cleanedUrl.startsWith('http://') && !cleanedUrl.startsWith('https://')) {
+      href = 'https://' + cleanedUrl
+    }
+    // Escape URL for use in href attribute
+    const escapedUrl = href.replace(/"/g, '&quot;')
+    // Display the cleaned URL but preserve original formatting in text
+    return `<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" class="dm-message-link">${cleanedUrl}</a>`
+  })
+  
+  return escaped
 }
 
 const scrollToBottom = () => {
@@ -365,6 +440,17 @@ watch(() => route.params.conversationId, async (newId) => {
   line-height: 1.5;
 }
 
+.dm-message-link {
+  color: var(--bauhaus-blue);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.dm-message-item.is-sent .dm-message-link {
+  color: rgba(255, 255, 255, 0.9);
+  text-decoration: underline;
+}
+
 .dm-input-container {
   display: flex;
   gap: var(--space-3);
@@ -382,6 +468,59 @@ watch(() => route.params.conversationId, async (newId) => {
 
 .error {
   color: var(--matisse-red);
+}
+
+/* URL Preview */
+.url-preview-card {
+  margin-top: var(--space-2);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--color-bg);
+  max-width: 400px;
+}
+
+.url-preview-link {
+  display: flex;
+  text-decoration: none;
+  color: inherit;
+  transition: all var(--transition-fast);
+}
+
+.url-preview-link:hover {
+  background: var(--color-bg-alt);
+}
+
+.url-preview-content {
+  flex: 1;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.url-preview-title {
+  font-weight: 700;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+.url-preview-domain {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.dm-message-item.is-sent .url-preview-card {
+  margin-left: auto;
+}
+
+@media (max-width: 768px) {
+  .url-preview-card {
+    max-width: 100%;
+  }
 }
 </style>
 
